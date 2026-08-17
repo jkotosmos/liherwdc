@@ -1,0 +1,2 @@
+tarif,produkt,segment,edinica_tarifikacii,cena,valyuta,skidka_uslovie,skidka_procent,deystvuet_s,deystvuet_po,primechanie
+<название тарифа>,<продукт>,<сегмент клиента>,<за что берётся плата>,<ставка>,<RUB/USD/EUR>,<при каком условии даётся скидка>,<процент>,<ГГГГ-ММ-ДД>,<ГГГГ-ММ-ДД>,<оговорки и исключения>

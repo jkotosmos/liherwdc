@@ -1,0 +1,4 @@
+tarif,produkt,segment,edinica_tarifikacii,cena,valyuta,skidka_uslovie,skidka_procent,deystvuet_s,deystvuet_po
+Базовый,Operon Core,малый бизнес,пользователь в месяц,1200,RUB,нет,0,2026-01-01,2026-12-31
+Расширенный,Operon Core,средний бизнес,пользователь в месяц,2400,RUB,от 50 пользователей,10,2026-01-01,2026-12-31
+Партнёрский,Operon Core,партнёры,пользователь в месяц,1800,RUB,статус дистрибьютора,25,2026-01-01,2026-12-31

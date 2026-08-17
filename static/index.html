@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ассистент OPERON</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">◈</span>
+      <div>
+        <div class="brand-name">Ассистент <span id="org-name">OPERON</span></div>
+        <div class="brand-sub" id="model-line">подключение…</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="indicators" id="indicators"></div>
+      <button id="new-chat" class="btn btn-ghost" type="button">Новый диалог</button>
+    </div>
+  </header>
+
+  <main class="chat" id="chat">
+    <section class="welcome" id="welcome">
+      <h1>Чем помочь?</h1>
+      <p class="welcome-sub">
+        Я отвечаю только по данным из базы знаний OPERON, ваших файлов Google Drive,
+        календаря и открытых источников — и всегда указываю, откуда взят факт.
+        Ничего не создаю и не меняю без вашего подтверждения.
+      </p>
+      <div class="suggestions" id="suggestions">
+        <button type="button" data-prompt="Что есть в базе знаний? Покажи состав по разделам.">Что есть в базе знаний</button>
+        <button type="button" data-prompt="Покажи мои встречи и дедлайны на ближайшую неделю.">Встречи на неделю</button>
+        <button type="button" data-prompt="Какие поручения просрочены и за кем они закреплены?">Просроченные поручения</button>
+        <button type="button" data-prompt="Составь список следующих действий по открытым задачам с приоритетами.">Список следующих действий</button>
+      </div>
+    </section>
+    <div id="messages"></div>
+  </main>
+
+  <footer class="composer">
+    <div class="composer-inner">
+      <textarea id="input" rows="1" placeholder="Спросите о продуктах, партнёрах, тарифах, KPI, задачах…" autocomplete="off"></textarea>
+      <button id="send" class="btn btn-primary" type="button" aria-label="Отправить">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10.2 15.6 12 3.4 13.8z"/></svg>
+      </button>
+    </div>
+    <div class="composer-hint">Enter — отправить, Shift+Enter — перенос строки</div>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

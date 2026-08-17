@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+.ruff_cache/
+
+# Секреты и токены Google OAuth
+credentials/
+*.pickle
+token.json
+client_secret*.json
+
+# Локальное состояние агента (сессии, реестр поручений)
+data/*
+!data/.gitkeep
+
+# Реальная база знаний OPERON — корпоративные документы не коммитим.
+# Порядок важен: сначала исключаем содержимое, затем возвращаем README
+# и каталог шаблонов (git не может вернуть файл из исключённого каталога,
+# поэтому каталог _templates разисключается до своего содержимого).
+knowledge_base/*
+!knowledge_base/README.md
+!knowledge_base/_templates/
+!knowledge_base/_templates/**
