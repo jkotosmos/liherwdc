@@ -49,7 +49,12 @@ class _FakeStream:
         return self._message
 
 
-class _FakeMessages:
+class FakeClient:
+    """Подставляется в OperonAgent вместо бэкенда модели.
+
+    Интерфейс тот же, что у AnthropicBackend и OpenAICompatBackend: stream(**params).
+    """
+
     def __init__(self, script: list[SimpleNamespace]) -> None:
         self._script = list(script)
         self.requests: list[dict[str, Any]] = []
@@ -59,14 +64,3 @@ class _FakeMessages:
         if not self._script:
             raise AssertionError("Модель вызвана больше раз, чем задано в сценарии")
         return _FakeStream(self._script.pop(0))
-
-
-class FakeClient:
-    """Подставляется в OperonAgent вместо anthropic.Anthropic."""
-
-    def __init__(self, script: list[SimpleNamespace]) -> None:
-        self.messages = _FakeMessages(script)
-
-    @property
-    def requests(self) -> list[dict[str, Any]]:
-        return self.messages.requests

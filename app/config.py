@@ -41,6 +41,9 @@ def _detect_provider() -> str:
         return explicit
     if os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
+    # Свой адрес шлюза + свой ключ = сторонний провайдер («AI-роутер»).
+    if os.getenv("OPERON_LLM_BASE_URL") and os.getenv("OPERON_LLM_API_KEY"):
+        return "custom"
     return "anthropic"
 
 
@@ -48,6 +51,9 @@ def _default_model(provider: str) -> str:
     if provider == "openrouter":
         # В OpenRouter идентификаторы моделей включают вендора.
         return "anthropic/claude-opus-4.1"
+    if provider == "custom":
+        # У стороннего шлюза свой каталог — имя модели обязан задать пользователь.
+        return ""
     return "claude-opus-5"
 
 
@@ -108,26 +114,38 @@ class Settings:
 
     def __post_init__(self) -> None:
         # dataclass заморожен, поэтому вычисляемые поля выставляем через object.
+        # Значение, переданное явно, имеет приоритет над окружением — иначе
+        # Settings(base_url=...) молча игнорировался бы (важно для тестов
+        # и для программной сборки конфигурации).
         provider = self.provider or "anthropic"
         object.__setattr__(self, "provider", provider)
 
-        object.__setattr__(
-            self, "model", os.getenv("OPERON_MODEL") or _default_model(provider)
-        )
-        object.__setattr__(
-            self,
-            "api_key",
-            os.getenv("OPERON_LLM_API_KEY")
-            or os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("ANTHROPIC_API_KEY")
-            or "",
-        )
-        default_base = OPENROUTER_BASE_URL if provider == "openrouter" else ""
-        object.__setattr__(
-            self,
-            "base_url",
-            (os.getenv("OPERON_LLM_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL") or default_base).rstrip("/"),
-        )
+        if not self.model:
+            object.__setattr__(
+                self, "model", os.getenv("OPERON_MODEL") or _default_model(provider)
+            )
+        if not self.api_key:
+            object.__setattr__(
+                self,
+                "api_key",
+                os.getenv("OPERON_LLM_API_KEY")
+                or os.getenv("OPENROUTER_API_KEY")
+                or os.getenv("ANTHROPIC_API_KEY")
+                or "",
+            )
+        if not self.base_url:
+            default_base = OPENROUTER_BASE_URL if provider == "openrouter" else ""
+            object.__setattr__(
+                self,
+                "base_url",
+                (
+                    os.getenv("OPERON_LLM_BASE_URL")
+                    or os.getenv("ANTHROPIC_BASE_URL")
+                    or default_base
+                ).rstrip("/"),
+            )
+        else:
+            object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
 
     # --- возможности провайдера -------------------------------------------
     # Серверные инструменты поиска, параметр effort и кэширование промпта —
@@ -137,6 +155,19 @@ class Settings:
     @property
     def is_anthropic_direct(self) -> bool:
         return self.provider == "anthropic"
+
+    @property
+    def llm_protocol(self) -> str:
+        """Формат запросов: «anthropic» (/v1/messages) или «openai» (/chat/completions).
+
+        Явно задаётся через OPERON_LLM_PROTOCOL. По умолчанию: Anthropic — для
+        прямого доступа и OpenRouter (у него есть Anthropic-совместимый режим),
+        OpenAI-совместимый — для прочих шлюзов, где это де-факто стандарт.
+        """
+        explicit = (os.getenv("OPERON_LLM_PROTOCOL") or "").strip().lower()
+        if explicit in {"anthropic", "openai"}:
+            return explicit
+        return "anthropic" if self.provider in {"anthropic", "openrouter"} else "openai"
 
     @property
     def web_search_enabled(self) -> bool:
@@ -154,7 +185,7 @@ class Settings:
     def extra_headers(self) -> dict[str, str]:
         """OpenRouter просит указывать источник трафика — влияет на лимиты."""
         if self.provider != "openrouter":
-            return {}
+            return {}  # у остальных шлюзов обязательных заголовков нет
         return {
             "HTTP-Referer": self.public_url or "https://amvera.ru",
             "X-Title": f"Assistant {self.org_name}",

@@ -42,8 +42,10 @@
 действий, анализирует показатели и объясняет отклонения.
 
 **Использует интернет.** Ищет данные о рынке, конкурентах, законодательстве и
-технологиях через серверный веб-поиск Anthropic, приводит ссылки и дату
-актуальности — и отделяет внешние данные от внутренних.
+технологиях, приводит ссылки и дату получения — и отделяет внешние данные от
+внутренних. При прямом доступе к Anthropic используется её серверный поиск,
+через сторонний шлюз — собственные инструменты по ключу поискового API
+(Tavily, Brave, Serper или Google CSE).
 
 ## Как устроены гарантии
 
@@ -73,17 +75,24 @@ cp .env.example .env            # укажите ключ доступа к мо
 python run.py                   # http://127.0.0.1:8000
 ```
 
-Доступ к Claude — через один из двух каналов, код одинаков:
+Доступ к модели — через любой шлюз, код агента одинаков:
 
 | Канал | Переменные | Когда |
 |---|---|---|
-| **OpenRouter** | `OPENROUTER_API_KEY`, `OPERON_MODEL=anthropic/claude-opus-4.1` | работает из России |
+| **Сторонний шлюз / «AI-роутер»** | `OPERON_LLM_BASE_URL`, `OPERON_LLM_API_KEY`, `OPERON_MODEL` | подписка у российского провайдера |
+| OpenRouter | `OPENROUTER_API_KEY`, `OPERON_MODEL=anthropic/claude-opus-4.1` | оплата по токенам |
 | Anthropic напрямую | `ANTHROPIC_API_KEY`, `OPERON_MODEL=claude-opus-5` | есть прямой доступ |
 
-Провайдер определяется по наличию ключа. OpenRouter принимает формат
-Anthropic Messages API, поэтому инструменты, подтверждения и стриминг
-работают без изменений; расширения Anthropic (серверный веб-поиск,
-`effort`, кэш промпта) через шлюз выключаются автоматически.
+Поддерживаются оба протокола — Anthropic Messages API и OpenAI Chat
+Completions. Не знаете, что у вашего провайдера? Проверка определит сама
+и заодно скажет, умеет ли шлюз вызывать инструменты (без этого агент
+работать не сможет):
+
+```bash
+python -m app.probe
+```
+
+Соответствие каждому пункту ТЗ расписано в [`TZ-COMPLIANCE.md`](TZ-COMPLIANCE.md).
 
 **Развёртывание на сервере — [`DEPLOY.md`](DEPLOY.md)** (Amvera Cloud, Docker,
 постоянный диск, перенос токена Google).
@@ -159,7 +168,9 @@ python -m app.integrations.google_auth
 | `tasks_list` | Реестр поручений, просрочки | — |
 | `task_create` | Фиксация поручения | **да** |
 | `task_update` | Смена статуса, срока, ответственного | **да** |
-| `web_search`, `web_fetch` | Интернет (серверные инструменты Anthropic) | — |
+| `internet_search` | Поиск в интернете (Tavily / Brave / Serper / Google CSE) | — |
+| `open_url` | Чтение страницы по ссылке | — |
+| `web_search`, `web_fetch` | Интернет серверными инструментами Anthropic (при прямом доступе) | — |
 
 ## Настройки
 
@@ -174,13 +185,15 @@ python -m app.integrations.google_auth
 | `OPERON_EFFORT` | `high` | Глубина работы: `low`…`max`. Только при прямом доступе к Anthropic |
 | `OPERON_KB_DIR` | `knowledge_base` | Каталог базы знаний |
 | `OPERON_TIMEZONE` | `Europe/Moscow` | Часовой пояс для дат и календаря |
-| `OPERON_WEB_SEARCH` | `true` | Разрешить выход в интернет |
+| `OPERON_LLM_BASE_URL` | — | Адрес шлюза, если провайдер сторонний |
+| `OPERON_LLM_PROTOCOL` | по провайдеру | `openai` или `anthropic` — определяется `app.probe` |
+| `TAVILY_API_KEY` и др. | — | Ключ поиска для работы с интернетом через сторонний шлюз |
 | `OPERON_GOOGLE_SCOPES` | чтение + запись | Права доступа к Google |
 
 ## Разработка
 
 ```bash
-python -m pytest tests/ -q      # 110 тестов, ~2 с
+python -m pytest tests/ -q      # 149 тестов, ~2 с
 python run.py --reload          # автоперезапуск
 ```
 
@@ -195,6 +208,8 @@ app/
 ├── config.py         Настройки из окружения
 ├── storage.py        Атомарная запись JSON
 ├── auth.py           Пароль на вход и подписанные куки
+├── llm.py            Бэкенды шлюзов: Anthropic и OpenAI-совместимый
+├── probe.py          Диагностика подключения к шлюзу
 ├── kb/               Индексация и BM25-поиск с русской морфологией
 ├── tools/            Инструменты: база знаний, Drive, Calendar, поручения
 └── integrations/     OAuth и клиент Google API

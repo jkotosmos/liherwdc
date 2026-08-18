@@ -18,6 +18,7 @@ import anthropic
 
 from .config import settings
 from .integrations import google_client
+from .llm import LLMError, build_backend
 from .kb import knowledge_base
 from .prompts import SYSTEM_PROMPT, runtime_context
 from .tools import registry
@@ -90,24 +91,26 @@ class OperonAgent:
     # --- клиент -------------------------------------------------------------
 
     @property
-    def client(self) -> anthropic.Anthropic:
+    def client(self) -> Any:
+        """Бэкенд выбранного протокола. Интерфейс одинаков для всех шлюзов."""
         if self._client is None:
             if not settings.api_key:
                 raise AgentError(
-                    "Не задан ключ доступа к модели. Укажите "
-                    + ("OPENROUTER_API_KEY" if settings.provider == "openrouter" else "ANTHROPIC_API_KEY")
-                    + " в переменных окружения."
+                    "Не задан ключ доступа к модели. Укажите OPERON_LLM_API_KEY "
+                    "(или ANTHROPIC_API_KEY / OPENROUTER_API_KEY) в переменных окружения."
                 )
-            options: dict[str, Any] = {"api_key": settings.api_key}
-            if settings.base_url:
-                options["base_url"] = settings.base_url
-            if settings.extra_headers:
-                options["default_headers"] = settings.extra_headers
+            if not settings.model:
+                raise AgentError(
+                    "Не задано имя модели. Укажите OPERON_MODEL — точное название "
+                    "берётся из каталога вашего провайдера."
+                )
             try:
-                self._client = anthropic.Anthropic(**options)
+                self._client = build_backend()
+            except LLMError as exc:
+                raise AgentError(str(exc)) from exc
             except Exception as exc:  # noqa: BLE001
                 raise AgentError(
-                    f"Не удалось создать клиента модели ({settings.provider}): {exc}"
+                    f"Не удалось подключиться к шлюзу ({settings.provider}): {exc}"
                 ) from exc
         return self._client
 
@@ -238,6 +241,9 @@ class OperonAgent:
             except anthropic.APIStatusError as exc:
                 yield {"type": "error", "message": self._api_error_text(exc)}
                 return
+            except LLMError as exc:
+                yield {"type": "error", "message": str(exc)}
+                return
             except anthropic.APIConnectionError as exc:
                 yield {
                     "type": "error",
@@ -332,10 +338,10 @@ class OperonAgent:
         """Один запрос к модели со стримингом текста. Возвращает финальное сообщение."""
         params = self._request_params(session)
         try:
-            stream_ctx = self.client.messages.stream(**params)
+            stream_ctx = self.client.stream(**params)
         except anthropic.BadRequestError as exc:
             if self._adapt_to_provider(exc):
-                stream_ctx = self.client.messages.stream(**self._request_params(session))
+                stream_ctx = self.client.stream(**self._request_params(session))
             else:
                 raise
 
@@ -345,7 +351,7 @@ class OperonAgent:
                 return stream.get_final_message()
         except anthropic.BadRequestError as exc:
             if self._adapt_to_provider(exc):
-                with self.client.messages.stream(**self._request_params(session)) as stream:
+                with self.client.stream(**self._request_params(session)) as stream:
                     yield from self._consume_stream(stream)
                     return stream.get_final_message()
             raise
