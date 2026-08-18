@@ -104,6 +104,7 @@ class TestProviderConfiguration:
     def _settings_with(self, monkeypatch, **env) -> Settings:
         for key in (
             "OPERON_LLM_PROVIDER", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+            "ROUTERAI_API_KEY", "OPERON_LLM_PROTOCOL",
             "OPERON_MODEL", "OPERON_LLM_BASE_URL", "ANTHROPIC_BASE_URL",
             "OPERON_WEB_SEARCH", "OPERON_USE_EFFORT", "OPERON_USE_PROMPT_CACHE",
         ):
@@ -113,6 +114,37 @@ class TestProviderConfiguration:
         import app.config
 
         return importlib.reload(app.config).Settings()
+
+    def test_routerai_preset(self, monkeypatch) -> None:
+        """RouterAI: адрес и протокол подставляются сами, нужен только ключ."""
+        config = self._settings_with(monkeypatch, ROUTERAI_API_KEY="ra-key")
+        assert config.provider == "routerai"
+        assert config.base_url == "https://routerai.ru/api/v1"
+        assert config.llm_protocol == "openai"
+        assert config.api_key == "ra-key"
+
+    def test_routerai_requires_explicit_model(self, monkeypatch) -> None:
+        """У шлюза свой каталог — угадывать имя модели нельзя."""
+        config = self._settings_with(monkeypatch, ROUTERAI_API_KEY="ra-key")
+        assert config.model == ""
+
+    def test_routerai_enables_own_internet_tools(self, monkeypatch) -> None:
+        """Серверный поиск Anthropic недоступен — работают собственные инструменты."""
+        config = self._settings_with(monkeypatch, ROUTERAI_API_KEY="ra-key")
+        assert config.web_search_enabled is False
+
+    def test_stray_anthropic_base_url_does_not_hijack_gateway(self, monkeypatch) -> None:
+        """Забытая ANTHROPIC_BASE_URL не должна уводить запросы шлюза на чужой адрес."""
+        config = self._settings_with(
+            monkeypatch,
+            ROUTERAI_API_KEY="ra-key",
+            ANTHROPIC_BASE_URL="https://api.anthropic.com",
+        )
+        assert config.base_url == "https://routerai.ru/api/v1"
+
+    def test_models_catalog_url(self, monkeypatch) -> None:
+        config = self._settings_with(monkeypatch, ROUTERAI_API_KEY="ra-key")
+        assert config.models_url == "https://routerai.ru/api/v1/models"
 
     def test_openrouter_detected_by_its_key(self, monkeypatch) -> None:
         config = self._settings_with(monkeypatch, OPENROUTER_API_KEY="sk-or-x")

@@ -16,6 +16,8 @@ load_dotenv(BASE_DIR / ".env")
 # Провайдеры доступа к модели. Anthropic-совместимый протокол поддерживают оба,
 # поэтому код агента одинаков — различаются адрес, ключ и набор возможностей.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# RouterAI — российский шлюз, совместим с API OpenAI.
+ROUTERAI_BASE_URL = "https://routerai.ru/api/v1"
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -39,6 +41,8 @@ def _detect_provider() -> str:
     explicit = (os.getenv("OPERON_LLM_PROVIDER") or "").strip().lower()
     if explicit:
         return explicit
+    if os.getenv("ROUTERAI_API_KEY"):
+        return "routerai"
     if os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
     # Свой адрес шлюза + свой ключ = сторонний провайдер («AI-роутер»).
@@ -51,8 +55,9 @@ def _default_model(provider: str) -> str:
     if provider == "openrouter":
         # В OpenRouter идентификаторы моделей включают вендора.
         return "anthropic/claude-opus-4.1"
-    if provider == "custom":
-        # У стороннего шлюза свой каталог — имя модели обязан задать пользователь.
+    if provider in {"custom", "routerai"}:
+        # У шлюза свой каталог — имя модели обязан задать пользователь.
+        # Посмотреть доступные: python -m app.probe
         return ""
     return "claude-opus-5"
 
@@ -129,19 +134,25 @@ class Settings:
                 self,
                 "api_key",
                 os.getenv("OPERON_LLM_API_KEY")
+                or os.getenv("ROUTERAI_API_KEY")
                 or os.getenv("OPENROUTER_API_KEY")
                 or os.getenv("ANTHROPIC_API_KEY")
                 or "",
             )
         if not self.base_url:
-            default_base = OPENROUTER_BASE_URL if provider == "openrouter" else ""
+            default_base = {
+                "openrouter": OPENROUTER_BASE_URL,
+                "routerai": ROUTERAI_BASE_URL,
+            }.get(provider, "")
+            # ANTHROPIC_BASE_URL учитываем только для самой Anthropic: иначе
+            # оставшаяся в окружении переменная увела бы запросы стороннего
+            # шлюза на чужой адрес.
+            anthropic_base = os.getenv("ANTHROPIC_BASE_URL", "") if provider == "anthropic" else ""
             object.__setattr__(
                 self,
                 "base_url",
                 (
-                    os.getenv("OPERON_LLM_BASE_URL")
-                    or os.getenv("ANTHROPIC_BASE_URL")
-                    or default_base
+                    os.getenv("OPERON_LLM_BASE_URL") or default_base or anthropic_base
                 ).rstrip("/"),
             )
         else:
@@ -168,6 +179,13 @@ class Settings:
         if explicit in {"anthropic", "openai"}:
             return explicit
         return "anthropic" if self.provider in {"anthropic", "openrouter"} else "openai"
+
+    @property
+    def models_url(self) -> str:
+        """Адрес каталога моделей провайдера (для диагностики)."""
+        if not self.base_url:
+            return ""
+        return self.base_url.rstrip("/") + "/models"
 
     @property
     def web_search_enabled(self) -> bool:

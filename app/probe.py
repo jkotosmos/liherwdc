@@ -101,6 +101,31 @@ def _try_anthropic(base_url: str, api_key: str, model: str) -> tuple[bool, bool,
     return True, any(b.get("type") == "tool_use" for b in content), "ответ получен"
 
 
+def _list_models(base_url: str, api_key: str) -> list[str]:
+    """Каталог моделей аккаунта: избавляет от угадывания точного имени."""
+    try:
+        response = httpx.get(
+            base_url.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {api_key}", "x-api-key": api_key},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        if response.status_code >= 400:
+            return []
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return []
+    names = []
+    for item in items:
+        name = item.get("id") or item.get("name") if isinstance(item, dict) else str(item)
+        if name:
+            names.append(str(name))
+    return sorted(names)
+
+
 def main() -> int:
     base_url = settings.base_url or "https://api.anthropic.com/v1"
     print("Проверка доступа к модели")
@@ -113,8 +138,20 @@ def main() -> int:
     if not settings.api_key:
         print("Нет ключа. Задайте OPERON_LLM_API_KEY.", file=sys.stderr)
         return 1
+
+    models = _list_models(base_url, settings.api_key)
+    if models:
+        print(f"Каталог моделей аккаунта — доступно {len(models)}:")
+        preferred = [m for m in models if "claude" in m.lower()]
+        for name in (preferred or models)[:20]:
+            print(f"  • {name}")
+        if preferred:
+            print("  (показаны модели Claude; полный список — в личном кабинете)")
+        print()
+
     if not settings.model:
-        print("Не задано имя модели. Задайте OPERON_MODEL.", file=sys.stderr)
+        print("Не задано имя модели. Задайте OPERON_MODEL — выберите из списка выше.",
+              file=sys.stderr)
         return 1
 
     checks: list[tuple[str, Any]] = [

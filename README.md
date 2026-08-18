@@ -79,7 +79,8 @@ python run.py                   # http://127.0.0.1:8000
 
 | Канал | Переменные | Когда |
 |---|---|---|
-| **Сторонний шлюз / «AI-роутер»** | `OPERON_LLM_BASE_URL`, `OPERON_LLM_API_KEY`, `OPERON_MODEL` | подписка у российского провайдера |
+| **RouterAI** | `ROUTERAI_API_KEY`, `OPERON_MODEL` | оплата из России; адрес и протокол подставляются сами |
+| Другой шлюз | `OPERON_LLM_BASE_URL`, `OPERON_LLM_API_KEY`, `OPERON_MODEL` | любой OpenAI- или Anthropic-совместимый |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPERON_MODEL=anthropic/claude-opus-4.1` | оплата по токенам |
 | Anthropic напрямую | `ANTHROPIC_API_KEY`, `OPERON_MODEL=claude-opus-5` | есть прямой доступ |
 
