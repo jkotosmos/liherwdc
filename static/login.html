@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход — Ассистент OPERON</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
+<style>
+  .login-wrap { display: grid; place-items: center; height: 100vh; height: 100dvh; padding: 20px; }
+  .login-card {
+    width: 100%; max-width: 380px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 28px;
+  }
+  .login-card .mark { margin-bottom: 16px; }
+  .login-card h1 { font-size: 19px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .login-card p { color: var(--text-dim); font-size: 14px; margin: 0 0 20px; }
+  .login-card input[type=password] {
+    width: 100%; font: inherit; padding: 10px 13px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); margin-bottom: 12px;
+  }
+  .login-card input[type=password]:focus { outline: none; border-color: var(--accent); }
+  .login-card button { width: 100%; background: var(--accent); color: #fff; border: none; padding: 11px; font-size: 15px; }
+  .login-error { color: var(--danger); font-size: 13.5px; min-height: 20px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="form">
+    <div class="mark">◈</div>
+    <h1>Ассистент OPERON</h1>
+    <p>Введите пароль доступа.</p>
+    <input type="password" id="password" placeholder="Пароль" autocomplete="current-password" autofocus required>
+    <button class="btn" type="submit" id="submit">Войти</button>
+    <div class="login-error" id="error"></div>
+  </form>
+</div>
+<script>
+  const form = document.getElementById("form");
+  const errorBox = document.getElementById("error");
+  const submit = document.getElementById("submit");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorBox.textContent = "";
+    submit.disabled = true;
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("password").value }),
+      });
+      if (response.ok) {
+        window.location.href = "/";
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      errorBox.textContent = payload.detail || `Ошибка ${response.status}`;
+    } catch (err) {
+      errorBox.textContent = `Сеть недоступна: ${err.message}`;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.pytest_cache/
+.ruff_cache/
+tests/
+examples/
+
+# Секреты в образ не попадают: ключи задаются переменными окружения Amvera,
+# токен Google лежит на постоянном диске.
+.env
+credentials/
+data/

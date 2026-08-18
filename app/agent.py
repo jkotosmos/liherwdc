@@ -84,18 +84,30 @@ class OperonAgent:
         self._client: anthropic.Anthropic | None = None
         # Сообщения с role="system" внутри messages поддерживают не все модели.
         self._supports_system_messages = True
+        # Параметры, которые шлюз отверг: повторяем запрос уже без них.
+        self._unsupported_params: set[str] = set()
 
     # --- клиент -------------------------------------------------------------
 
     @property
     def client(self) -> anthropic.Anthropic:
         if self._client is None:
+            if not settings.api_key:
+                raise AgentError(
+                    "Не задан ключ доступа к модели. Укажите "
+                    + ("OPENROUTER_API_KEY" if settings.provider == "openrouter" else "ANTHROPIC_API_KEY")
+                    + " в переменных окружения."
+                )
+            options: dict[str, Any] = {"api_key": settings.api_key}
+            if settings.base_url:
+                options["base_url"] = settings.base_url
+            if settings.extra_headers:
+                options["default_headers"] = settings.extra_headers
             try:
-                self._client = anthropic.Anthropic()
+                self._client = anthropic.Anthropic(**options)
             except Exception as exc:  # noqa: BLE001
                 raise AgentError(
-                    "Не удалось создать клиента Anthropic. Проверьте переменную окружения "
-                    f"ANTHROPIC_API_KEY. Подробности: {exc}"
+                    f"Не удалось создать клиента модели ({settings.provider}): {exc}"
                 ) from exc
         return self._client
 
@@ -103,7 +115,7 @@ class OperonAgent:
 
     def _tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
-        if settings.web_search_enabled:
+        if settings.web_search_enabled and self._param_enabled("web_tools"):
             tools.extend(WEB_TOOLS)
         tools.extend(registry.anthropic_tools())
         return tools
@@ -111,13 +123,10 @@ class OperonAgent:
     def _system(self) -> list[dict[str, Any]]:
         # Единственный блок и единственная точка кэширования: промпт неизменен,
         # поэтому вместе с ним кэшируются и определения инструментов.
-        return [
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        block: dict[str, Any] = {"type": "text", "text": SYSTEM_PROMPT}
+        if self._param_enabled("cache_control"):
+            block["cache_control"] = {"type": "ephemeral"}
+        return [block]
 
     def _api_messages(self, session: Session) -> list[dict[str, Any]]:
         if self._supports_system_messages:
@@ -141,16 +150,29 @@ class OperonAgent:
         return converted
 
     def _request_params(self, session: Session) -> dict[str, Any]:
-        return {
+        params: dict[str, Any] = {
             "model": settings.model,
             "max_tokens": settings.max_tokens,
             "system": self._system(),
             "messages": self._api_messages(session),
             "tools": self._tools(),
-            "output_config": {"effort": settings.effort},
-            # Кэшируем хвост истории — на длинных диалогах это основная экономия.
-            "cache_control": {"type": "ephemeral"},
         }
+        if self._param_enabled("output_config"):
+            params["output_config"] = {"effort": settings.effort}
+        if self._param_enabled("cache_control"):
+            # Кэшируем хвост истории — на длинных диалогах это основная экономия.
+            params["cache_control"] = {"type": "ephemeral"}
+        return params
+
+    def _param_enabled(self, name: str) -> bool:
+        """Параметр включён настройками и ещё не отклонён провайдером."""
+        if name in self._unsupported_params:
+            return False
+        if name == "output_config":
+            return settings.effort_enabled
+        if name == "cache_control":
+            return settings.prompt_cache_enabled
+        return True
 
     # --- публичный API ------------------------------------------------------
 
@@ -312,7 +334,7 @@ class OperonAgent:
         try:
             stream_ctx = self.client.messages.stream(**params)
         except anthropic.BadRequestError as exc:
-            if self._retry_without_system_messages(exc):
+            if self._adapt_to_provider(exc):
                 stream_ctx = self.client.messages.stream(**self._request_params(session))
             else:
                 raise
@@ -322,7 +344,7 @@ class OperonAgent:
                 yield from self._consume_stream(stream)
                 return stream.get_final_message()
         except anthropic.BadRequestError as exc:
-            if self._retry_without_system_messages(exc):
+            if self._adapt_to_provider(exc):
                 with self.client.messages.stream(**self._request_params(session)) as stream:
                     yield from self._consume_stream(stream)
                     return stream.get_final_message()
@@ -349,15 +371,40 @@ class OperonAgent:
                 if getattr(delta, "type", "") == "text_delta":
                     yield {"type": "text_delta", "text": delta.text}
 
-    def _retry_without_system_messages(self, exc: anthropic.BadRequestError) -> bool:
-        """Модель не поддерживает role=system внутри messages — переключаемся на фолбэк."""
-        if not self._supports_system_messages:
-            return False
+    def _adapt_to_provider(self, exc: anthropic.BadRequestError) -> bool:
+        """Отключает то, что не принял шлюз, и сообщает, стоит ли повторить запрос.
+
+        Прокси вроде OpenRouter принимают формат Anthropic, но не обязаны
+        поддерживать все её расширения. Вместо падения снимаем спорный параметр
+        и повторяем ход — один раз на каждый параметр.
+        """
         message = str(exc).lower()
-        if "system" in message and ("role" in message or "not supported" in message):
-            logger.warning("Модель не поддерживает системные сообщения в истории, включаю фолбэк")
+
+        if self._supports_system_messages and "system" in message and (
+            "role" in message or "not supported" in message or "unsupported" in message
+        ):
+            logger.warning("Провайдер не принял системные сообщения в истории, включаю фолбэк")
             self._supports_system_messages = False
             return True
+
+        # Ключ — фрагмент текста ошибки, значение — что именно отключаем.
+        markers = {
+            "output_config": "output_config",
+            "effort": "output_config",
+            "cache_control": "cache_control",
+            "web_search": "web_tools",
+            "web_fetch": "web_tools",
+            "server_tool": "web_tools",
+        }
+        for marker, param in markers.items():
+            if marker in message and param not in self._unsupported_params:
+                logger.warning(
+                    "Провайдер %s не принял «%s» — отключаю и повторяю запрос",
+                    settings.provider,
+                    param,
+                )
+                self._unsupported_params.add(param)
+                return True
         return False
 
     # --- вспомогательное ----------------------------------------------------

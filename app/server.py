@@ -8,11 +8,12 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import auth
 from .agent import agent
 from .config import BASE_DIR, settings
 from .integrations import google_client
@@ -58,6 +59,14 @@ class ResetRequest(BaseModel):
     session_id: str | None = None
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=512)
+
+
+# Пути, доступные без входа: проверка живости, сама страница входа и статика.
+PUBLIC_PATHS = {"/api/health", "/api/login", "/login", "/favicon.ico"}
+
+
 def _sse(events: Iterator[dict[str, Any]]) -> Iterator[str]:
     """Оборачивает поток событий агента в Server-Sent Events."""
     try:
@@ -83,6 +92,66 @@ def _stream_response(events: Iterator[dict[str, Any]]) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    """Пропускает запрос только с действующей кукой, если задан пароль."""
+    path = request.url.path
+    if not settings.auth_required or path in PUBLIC_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+
+    if auth.token_is_valid(request.cookies.get(auth.COOKIE_NAME)):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "Требуется вход в систему."}, status_code=401)
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.post("/api/login")
+def login(request: LoginRequest, http_request: Request) -> JSONResponse:
+    if not settings.auth_required:
+        return JSONResponse({"status": "ok", "auth_required": False})
+
+    client = http_request.client.host if http_request.client else "unknown"
+    locked_for = auth.throttle_state(client)
+    if locked_for:
+        return JSONResponse(
+            {"detail": f"Слишком много попыток. Повторите через {locked_for} с."},
+            status_code=429,
+        )
+
+    if not auth.password_is_valid(request.password):
+        auth.register_failure(client)
+        return JSONResponse({"detail": "Неверный пароль."}, status_code=401)
+
+    auth.register_success(client)
+    response = JSONResponse({"status": "ok"})
+    response.set_cookie(
+        auth.COOKIE_NAME,
+        auth.issue_token(),
+        max_age=settings.auth_ttl_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        # За прокси Amvera соединение идёт по HTTPS — куку помечаем Secure.
+        secure=bool(settings.public_url.startswith("https://")),
+    )
+    return response
+
+
+@app.post("/api/logout")
+def logout() -> JSONResponse:
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(auth.COOKIE_NAME)
+    return response
+
+
+@app.get("/login")
+def login_page() -> Response:
+    if not settings.auth_required:
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(STATIC_DIR / "login.html")
 
 
 @app.post("/api/chat")
@@ -127,7 +196,9 @@ def status() -> dict[str, Any]:
     return {
         "org": settings.org_name,
         "model": settings.model,
-        "effort": settings.effort,
+        "provider": settings.provider,
+        "effort": settings.effort if settings.effort_enabled else None,
+        "auth_required": settings.auth_required,
         "timezone": settings.timezone_name,
         "knowledge_base": kb,
         "google": google,
@@ -159,7 +230,14 @@ if STATIC_DIR.exists():
 
 def _startup_report() -> None:
     kb = knowledge_base.stats
-    logger.info("Модель: %s (effort=%s)", settings.model, settings.effort)
+    logger.info(
+        "Провайдер: %s | модель: %s | адрес: %s",
+        settings.provider,
+        settings.model,
+        settings.base_url or "api.anthropic.com",
+    )
+    if not settings.auth_required:
+        logger.warning("Пароль не задан (OPERON_ACCESS_PASSWORD) — вход в интерфейс свободный")
     logger.info(
         "База знаний: %s документов в %s", kb["documents"], kb["root"]
     )

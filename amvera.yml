@@ -1,0 +1,18 @@
+# Конфигурация развёртывания в Amvera Cloud.
+# Сборка идёт по Dockerfile: так окружение на сервере совпадает с локальным.
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+    version: latest
+
+build:
+  dockerfile: Dockerfile
+  skip: false
+
+run:
+  # Постоянный диск: сюда пишутся база знаний, поручения и токен Google.
+  # Всё, что вне этого каталога, теряется при каждом передеплое.
+  persistenceMount: /data
+  # Порт, который слушает приложение внутри контейнера.
+  containerPort: 80
