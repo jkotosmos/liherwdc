@@ -48,7 +48,30 @@ class FakeAgent:
 
 class TestBasics:
     def test_health(self, client: TestClient) -> None:
-        assert client.get("/api/health").json() == {"status": "ok"}
+        payload = client.get("/api/health").json()
+        assert payload["status"] == "ok"
+        assert payload["web"] == "ok"
+        # Бот не настроен в тестах — это не деградация, а осознанное выключение.
+        assert payload["telegram"]["configured"] is False
+        assert payload["telegram"]["healthy"] is True
+
+    def test_health_reports_dead_bot(self, client: TestClient, monkeypatch) -> None:
+        """Молча умерший бот не должен выглядеть здоровым."""
+        from app import server
+
+        monkeypatch.setattr(
+            server.telegram,
+            "status",
+            lambda: {"healthy": False, "running": False, "enabled": True,
+                     "configured": True, "restarts": 3, "last_error": "TelegramError: 401"},
+        )
+        response = client.get("/api/health")
+        assert response.status_code == 200, "обычная проверка живости не должна падать"
+        assert response.json()["status"] == "degraded"
+        assert response.json()["telegram"]["last_error"] == "TelegramError: 401"
+
+        strict = client.get("/api/health?strict=1")
+        assert strict.status_code == 503, "строгая проверка обязана видеть мёртвого бота"
 
     def test_status_exposes_configuration(self, client: TestClient) -> None:
         payload = client.get("/api/status").json()

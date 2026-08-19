@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,14 @@ DECLINED_TEMPLATE = (
     "{comment}"
 )
 
+# Молчание — это отказ. Но отказ, который никогда не наступает, оставляет ход
+# висеть вечно, поэтому у него есть срок.
+EXPIRED_TEMPLATE = (
+    "Пользователь не ответил на запрос подтверждения за {minutes} мин — действие НЕ "
+    "выполнено и считается отклонённым. Не повторяй вызов автоматически: коротко "
+    "сообщи об отмене и спроси, выполнять ли действие сейчас."
+)
+
 
 @dataclass
 class PendingAction:
@@ -62,6 +71,25 @@ class PendingTurn:
 
     completed_results: list[dict[str, Any]] = field(default_factory=list)
     actions: list[PendingAction] = field(default_factory=list)
+    # monotonic, а не время суток: перевод часов не должен отменять действие.
+    created_at: float = field(default_factory=time.monotonic)
+
+    @property
+    def age_seconds(self) -> float:
+        return time.monotonic() - self.created_at
+
+    @property
+    def expired(self) -> bool:
+        ttl = settings.confirmation_ttl_minutes
+        return ttl > 0 and self.age_seconds > ttl * 60
+
+    @property
+    def minutes_left(self) -> int:
+        """Сколько минут осталось на ответ (0, если срок не ограничен или вышел)."""
+        ttl = settings.confirmation_ttl_minutes
+        if ttl <= 0:
+            return 0
+        return max(0, int((ttl * 60 - self.age_seconds) // 60))
 
 
 @dataclass
@@ -73,7 +101,16 @@ class Session:
 
     @property
     def awaiting_confirmation(self) -> bool:
-        return self.pending is not None
+        """Ход заморожен и ждёт живого решения пользователя.
+
+        Просроченный ход сюда не относится: он уже отклонён по времени,
+        и принимать по нему запоздалое «подтверждаю» нельзя.
+        """
+        return self.pending is not None and not self.pending.expired
+
+    @property
+    def pending_expired(self) -> bool:
+        return self.pending is not None and self.pending.expired
 
 
 class AgentError(Exception):
@@ -180,21 +217,55 @@ class OperonAgent:
     # --- публичный API ------------------------------------------------------
 
     def send_user_message(self, session: Session, text: str) -> Iterator[dict[str, Any]]:
+        # Просроченный ход снимаем молча: пользователь уже начал говорить о другом,
+        # а модель обязана узнать, что действие не выполнено.
+        expired_results = self._discard_expired_pending(session)
+
         if session.awaiting_confirmation:
+            left = session.pending.minutes_left if session.pending else 0
             yield {
                 "type": "error",
-                "message": "Ход приостановлен: сначала подтвердите или отклоните запрошенное действие.",
+                "message": (
+                    "Ход приостановлен: сначала подтвердите или отклоните запрошенное действие."
+                    + (f" На ответ осталось около {left} мин." if left else "")
+                ),
             }
             return
 
-        session.messages.append({"role": "user", "content": text})
+        if expired_results is not None:
+            yield {
+                "type": "warning",
+                "message": (
+                    f"Предыдущее действие отменено: подтверждение не получено за "
+                    f"{settings.confirmation_ttl_minutes} мин."
+                ),
+            }
+            # Результаты инструментов и новая реплика идут одним сообщением:
+            # API требует, чтобы tool_result шли сразу за вызовом инструмента.
+            session.messages.append(
+                {"role": "user", "content": [*expired_results, {"type": "text", "text": text}]}
+            )
+        else:
+            session.messages.append({"role": "user", "content": text})
+
         session.messages.append({"role": "system", "content": self._runtime_context()})
         self._trim_history(session)
         yield from self._run_loop(session)
 
     def resume_with_decisions(
-        self, session: Session, decisions: dict[str, str], comments: dict[str, str] | None = None
+        self,
+        session: Session,
+        decisions: dict[str, str],
+        comments: dict[str, str] | None = None,
+        *,
+        timed_out: bool = False,
     ) -> Iterator[dict[str, Any]]:
+        """Продолжает ход с решениями пользователя.
+
+        Решение по действию должно быть явным: всё, кроме «approve», — отказ,
+        отсутствие решения — тоже отказ. При ``timed_out`` отказом считается
+        именно молчание, и модель получает об этом отдельную формулировку.
+        """
         pending = session.pending
         if pending is None:
             yield {"type": "error", "message": "Нет действий, ожидающих подтверждения."}
@@ -204,7 +275,10 @@ class OperonAgent:
         results = list(pending.completed_results)
 
         for action in pending.actions:
-            decision = (decisions.get(action.tool_use_id) or "reject").lower()
+            raw = decisions.get(action.tool_use_id)
+            decision = (raw or "reject").lower()
+            title = action.preview.get("title", action.name)
+
             if decision in {"approve", "approved", "yes", "confirm", "да"}:
                 yield {"type": "tool_start", "name": action.name, "activity": self._activity(action.name)}
                 content, is_error = registry.execute(action.name, action.tool_input)
@@ -215,6 +289,14 @@ class OperonAgent:
                     "summary": self._summarize(action.name, content, is_error),
                     "confirmed": True,
                 }
+            elif timed_out and raw is None:
+                content = EXPIRED_TEMPLATE.format(minutes=settings.confirmation_ttl_minutes)
+                is_error = False
+                yield {
+                    "type": "tool_declined",
+                    "name": action.name,
+                    "summary": f"Отменено по времени (нет ответа): {title}",
+                }
             else:
                 comment = comments.get(action.tool_use_id, "").strip()
                 content = DECLINED_TEMPLATE.format(
@@ -224,13 +306,60 @@ class OperonAgent:
                 yield {
                     "type": "tool_declined",
                     "name": action.name,
-                    "summary": f"Действие отклонено пользователем: {action.preview.get('title', action.name)}",
+                    "summary": f"Действие отклонено пользователем: {title}",
                 }
             results.append(self._tool_result(action.tool_use_id, content, is_error))
 
         session.pending = None
         session.messages.append({"role": "user", "content": results})
         yield from self._run_loop(session)
+
+    def expire_pending(
+        self,
+        session: Session,
+        decisions: dict[str, str] | None = None,
+        comments: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Закрывает просроченный ход: неотвеченные карточки становятся отказом.
+
+        Уже нажатые кнопки уважаем — пользователь по ним высказался. Молчание
+        по остальным трактуем как отказ и сообщаем об этом вслух: иначе
+        «нет ответа = отказ» остаётся правилом на бумаге.
+        """
+        if session.pending is None or not session.pending.expired:
+            return
+        yield {
+            "type": "warning",
+            "message": (
+                f"Подтверждение не получено за {settings.confirmation_ttl_minutes} мин — "
+                "неподтверждённые действия отменены."
+            ),
+        }
+        yield from self.resume_with_decisions(
+            session, decisions or {}, comments or {}, timed_out=True
+        )
+
+    def _discard_expired_pending(self, session: Session) -> list[dict[str, Any]] | None:
+        """Снимает просроченный ход, возвращая tool_result-блоки с отказом.
+
+        Отдельный запрос к модели ради этого не делаем: блоки уедут вместе со
+        следующей репликой пользователя.
+        """
+        pending = session.pending
+        if pending is None or not pending.expired:
+            return None
+
+        results = list(pending.completed_results)
+        content = EXPIRED_TEMPLATE.format(minutes=settings.confirmation_ttl_minutes)
+        for action in pending.actions:
+            results.append(self._tool_result(action.tool_use_id, content, False))
+        session.pending = None
+        logger.info(
+            "Сессия %s: %s действий отменено по истечении срока подтверждения",
+            session.session_id,
+            len(pending.actions),
+        )
+        return results
 
     # --- основной цикл ------------------------------------------------------
 
@@ -319,6 +448,9 @@ class OperonAgent:
                 yield {
                     "type": "confirmation_required",
                     "actions": [action.as_dict() for action in pending_actions],
+                    # Срок показываем сразу: пользователь должен знать, что
+                    # молчание — это отказ, а не бесконечное ожидание.
+                    "expires_in_minutes": settings.confirmation_ttl_minutes,
                 }
                 yield {"type": "done", "stop": "awaiting_confirmation", "usage": dict(session.usage)}
                 return

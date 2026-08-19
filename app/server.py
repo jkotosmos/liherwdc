@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -31,50 +30,18 @@ logger = logging.getLogger("operon")
 STATIC_DIR = BASE_DIR / "static"
 
 
-_telegram_bot: Any = None
-_telegram_thread: threading.Thread | None = None
-
-
-def _start_telegram() -> None:
-    """Поднимает бота фоновым потоком: на Amvera процесс один."""
-    global _telegram_bot, _telegram_thread
-
-    if not settings.telegram_token:
-        logger.info("Telegram не настроен (нет TELEGRAM_BOT_TOKEN) — работает только веб-интерфейс")
-        return
-    if not settings.telegram_allowed_users:
-        logger.error(
-            "Telegram-бот НЕ запущен: не задан TELEGRAM_ALLOWED_USERS. "
-            "Без белого списка доступ к вашему Google-аккаунту получил бы любой."
-        )
-        return
-
-    from .telegram.api import TelegramError
-    from .telegram.bot import TelegramBot
-
-    try:
-        _telegram_bot = TelegramBot()
-    except TelegramError as exc:
-        logger.error("Telegram-бот не запущен: %s", exc)
-        return
-
-    _telegram_thread = threading.Thread(target=_telegram_bot.run, name="telegram", daemon=True)
-    _telegram_thread.start()
-
-
-def _stop_telegram() -> None:
-    if _telegram_bot is not None:
-        _telegram_bot.stop()
-    if _telegram_thread is not None:
-        _telegram_thread.join(timeout=5)
+# Бот живёт фоновым потоком того же процесса (на Amvera процесс один), но не
+# сам по себе: за перезапуском после сбоя следит надзор, он же отвечает на
+# вопрос «бот жив?» в /api/health.
+from .telegram.supervisor import supervisor as telegram
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _startup_report()
-    _start_telegram()
+    telegram.start()
     yield
-    _stop_telegram()
+    telegram.stop()
 
 
 app = FastAPI(title=f"Ассистент {settings.org_name}", version="1.0.0", lifespan=lifespan)
@@ -211,6 +178,16 @@ def confirm(request: ConfirmRequest) -> StreamingResponse:
     session = store.get(request.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Сессия не найдена — начните новый диалог.")
+    if session.pending_expired:
+        # Запоздалое «подтверждаю» не принимаем: срок вышел, действие уже
+        # отклонено. Отказ уедет модели вместе со следующей репликой.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Срок подтверждения истёк ({settings.confirmation_ttl_minutes} мин) — "
+                "действие отменено. Повторите запрос, если оно всё ещё нужно."
+            ),
+        )
     if not session.awaiting_confirmation:
         raise HTTPException(status_code=409, detail="Нет действий, ожидающих подтверждения.")
 
@@ -244,11 +221,8 @@ def status() -> dict[str, Any]:
         "knowledge_base": kb,
         "google": google,
         "web_search": settings.web_search_enabled,
-        "telegram": {
-            "configured": bool(settings.telegram_token),
-            "allowed_users": len(settings.telegram_allowed_users),
-            "running": _telegram_thread is not None and _telegram_thread.is_alive(),
-        },
+        "telegram": telegram.status(),
+        "confirmation_ttl_minutes": settings.confirmation_ttl_minutes,
         "tools": [
             {
                 "name": spec.name,
@@ -261,8 +235,22 @@ def status() -> dict[str, Any]:
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(strict: bool = False) -> JSONResponse:
+    """Живость процесса и состояние бота.
+
+    По умолчанию код всегда 200: это проверка живости, а перезапуск контейнера
+    из-за неверного токена Telegram превратился бы в бесконечный цикл — бота
+    и так перезапускает надзор внутри процесса. Для внешнего мониторинга есть
+    ?strict=1: там неработающий, но настроенный бот даёт 503.
+    """
+    bot = telegram.status()
+    healthy = bool(bot["healthy"])
+    payload: dict[str, Any] = {
+        "status": "ok" if healthy else "degraded",
+        "web": "ok",
+        "telegram": bot,
+    }
+    return JSONResponse(payload, status_code=503 if (strict and not healthy) else 200)
 
 
 @app.get("/")
@@ -299,6 +287,12 @@ def _startup_report() -> None:
     else:
         logger.warning("Google не подключён: %s", google.get("reason"))
     logger.info("Инструментов зарегистрировано: %s", len(registry.names()))
+    logger.info(
+        "Подтверждение действий: %s",
+        f"ждём ответа {settings.confirmation_ttl_minutes} мин, затем отказ"
+        if settings.confirmation_ttl_minutes > 0
+        else "без ограничения по времени (OPERON_CONFIRMATION_TTL_MINUTES=0)",
+    )
     if settings.telegram_enabled:
         logger.info(
             "Telegram: белый список из %s пользователей", len(settings.telegram_allowed_users)

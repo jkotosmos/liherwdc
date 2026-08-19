@@ -305,3 +305,192 @@ class TestErrors:
         bot, api = make_bot(agent, monkeypatch)
         bot._handle_update(message("вопрос"))
         assert any("401" in t for t in api.texts("edit"))
+
+
+class TestAuthCommand:
+    """Переавторизация Google без переноса файлов на сервер."""
+
+    def _bot(self, monkeypatch):
+        return make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
+
+    def test_auth_sends_link_and_waits_for_code(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(
+            bot_module.google_oauth, "authorization_url", lambda: "https://accounts.google.com/o/oauth2/auth?x=1"
+        )
+        bot._handle_update(message("/auth"))
+
+        text = api.texts()[0]
+        assert "accounts.google.com" in text
+        assert "адрес из строки браузера" in text
+        assert bot._states[1].oauth_started_at is not None
+
+    def test_pasted_url_is_exchanged_for_a_token(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        exchanged: list[str] = []
+
+        def fake_exchange(text: str) -> dict:
+            exchanged.append(text)
+            return {
+                "path": "/data/credentials/google_token.json.enc",
+                "encrypted": True,
+                "scopes": ["https://www.googleapis.com/auth/drive.file"],
+                "missing_scopes": [],
+                "account": "boss@operon.ru",
+            }
+
+        monkeypatch.setattr(bot_module.google_oauth, "exchange_code", fake_exchange)
+
+        bot._handle_update(message("/auth"))
+        bot._handle_update(message("http://localhost:8765/?code=4%2F0Axyz_abcdefghijkl&scope=x"))
+
+        assert exchanged, "код должен уйти на обмен"
+        result = api.texts()[-1]
+        assert "Google подключён" in result
+        assert "boss@operon.ru" in result
+        assert bot._states[1].oauth_started_at is None, "режим ожидания обязан сняться"
+
+    def test_missing_scopes_are_reported(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(
+            bot_module.google_oauth,
+            "exchange_code",
+            lambda text: {
+                "path": "p", "encrypted": False, "account": "",
+                "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+                "missing_scopes": ["https://www.googleapis.com/auth/calendar.events"],
+            },
+        )
+        bot._handle_update(message("/auth"))
+        bot._handle_update(message("4/0Axyz_abcdefghijkl"))
+
+        text = api.texts()[-1]
+        assert "НЕ выданы" in text
+        assert "calendar.events" in text
+        assert "БЕЗ шифрования" in text
+
+    def test_exchange_error_is_shown_verbatim(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+
+        def boom(text: str):
+            raise bot_module.google_oauth.OAuthError("Google отклонил код (invalid_grant).")
+
+        monkeypatch.setattr(bot_module.google_oauth, "exchange_code", boom)
+        bot._handle_update(message("/auth"))
+        bot._handle_update(message("4/0Axyz_abcdefghijkl"))
+        assert "invalid_grant" in api.texts()[-1]
+
+    def test_ordinary_question_does_not_get_swallowed_as_a_code(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(
+            bot_module.google_oauth,
+            "exchange_code",
+            lambda text: pytest.fail("вопрос не должен уходить на обмен"),
+        )
+        bot._handle_update(message("/auth"))
+        bot._handle_update(message("какие встречи на завтра?"))
+
+        assert "не похоже на код" in api.texts()[-1]
+        assert bot._states[1].oauth_started_at is None
+
+    def test_auth_refuses_while_confirmation_is_pending(self, monkeypatch) -> None:
+        agent = FakeAgent([
+            {"type": "confirmation_required", "actions": [TestConfirmationButtons.ACTION]},
+            {"type": "done", "stop": "awaiting_confirmation"},
+        ])
+        bot, api = make_bot(agent, monkeypatch)
+        bot._handle_update(message("поставь задачу"))
+        bot._handle_update(message("/auth"))
+        assert "Сначала закройте запрос подтверждения" in api.texts()[-1]
+
+    def test_auth_appears_in_help(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        bot._handle_update(message("/help"))
+        assert "/auth" in api.texts()[0]
+
+
+class TestConfirmationTimeout:
+    """«Нет ответа = отказ» — по времени, а не только по логике."""
+
+    def _pending_bot(self, monkeypatch):
+        agent = FakeAgent([
+            {"type": "confirmation_required", "actions": [TestConfirmationButtons.ACTION]},
+            {"type": "done", "stop": "awaiting_confirmation"},
+        ])
+        bot, api = make_bot(agent, monkeypatch)
+        bot._handle_update(message("поставь задачу Иванову"))
+        return bot, api, agent
+
+    def test_card_shows_the_deadline(self, monkeypatch) -> None:
+        _, api, _ = self._pending_bot(monkeypatch)
+        card = [t for t in api.texts() if "Зафиксировать поручение" in t][0]
+        assert "Без ответа за" in card and "отмена" in card
+
+    def test_sweep_cancels_the_card_and_closes_the_turn(self, monkeypatch) -> None:
+        bot, api, agent = self._pending_bot(monkeypatch)
+        expired: list = []
+        agent.expire_pending = lambda session, decisions=None, comments=None: (
+            expired.append((dict(decisions or {}), dict(comments or {}))),
+            iter([{"type": "text_delta", "text": "Действие отменено."},
+                  {"type": "done", "stop": "end_turn"}]),
+        )[1]
+
+        session = store.get("tg-1")
+        from app.agent import PendingTurn
+        session.pending = PendingTurn()
+        session.pending.created_at -= 10_000  # срок заведомо вышел
+
+        bot.sweep_expired()
+
+        assert expired, "просроченный ход обязан закрыться сам"
+        assert any("Время вышло" in t for t in api.texts("edit"))
+        assert bot._states[1].cards == {}, "карточки должны быть сняты"
+
+    def test_sweep_leaves_fresh_cards_alone(self, monkeypatch) -> None:
+        bot, api, agent = self._pending_bot(monkeypatch)
+        agent.expire_pending = lambda *a, **k: pytest.fail("свежую карточку трогать нельзя")
+
+        session = store.get("tg-1")
+        from app.agent import PendingTurn
+        session.pending = PendingTurn()
+
+        bot.sweep_expired()
+        assert bot._states[1].cards, "карточка должна остаться на месте"
+
+    def test_expired_oauth_wait_is_released(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
+        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        bot._handle_update(message("/auth"))
+        bot._states[1].oauth_started_at -= 10_000
+
+        bot.sweep_expired()
+
+        assert bot._states[1].oauth_started_at is None
+        assert "Код авторизации так и не пришёл" in api.texts()[-1]
+
+    def test_silence_after_edits_button_does_not_hang_forever(self, monkeypatch) -> None:
+        """Нажали «Правки» и пропали: ход всё равно обязан закрыться."""
+        bot, api, agent = self._pending_bot(monkeypatch)
+        closed: list = []
+        agent.expire_pending = lambda session, decisions=None, comments=None: (
+            closed.append(dict(decisions or {})),
+            iter([{"type": "done", "stop": "end_turn"}]),
+        )[1]
+
+        token = api.keyboards()[0]["inline_keyboard"][0][0]["callback_data"].split(":", 1)[1]
+        bot._handle_update(callback(f"e:{token}"))
+        assert bot._states[1].awaiting_comment_for, "бот ждёт текст правок"
+
+        session = store.get("tg-1")
+        from app.agent import PendingTurn
+        session.pending = PendingTurn()
+        session.pending.created_at -= 10_000
+
+        bot.sweep_expired()
+
+        assert closed == [{"t1": "reject"}], "нажатая кнопка «Правки» — это отказ"
+        assert bot._states[1].awaiting_comment_for is None

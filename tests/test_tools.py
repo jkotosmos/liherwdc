@@ -131,7 +131,6 @@ class TestGoogleDegradation:
             ("drive_search", {"query": "договор"}),
             ("drive_read", {"file_id": "abc"}),
             ("calendar_list_events", {}),
-            ("calendar_list_calendars", {}),
         ],
     )
     def test_tools_report_setup_instructions(self, tool: str, payload: dict) -> None:

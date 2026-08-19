@@ -20,7 +20,7 @@ from typing import Any
 
 from ..agent import agent as default_agent
 from ..config import settings
-from ..integrations import google_client
+from ..integrations import google_client, google_oauth
 from ..kb import knowledge_base
 from ..sessions import store
 from .api import TelegramAPI, TelegramError
@@ -35,10 +35,12 @@ GREETING = (
     "Команды:\n"
     "/new — начать диалог заново\n"
     "/status — что подключено\n"
+    "/auth — подключить Google (или переподключить)\n"
     "/help — подсказка"
 )
 
 THINKING = "⏳ Думаю…"
+EXPIRED_MARK = "⌛ Время вышло — действие отменено"
 
 
 @dataclass
@@ -59,6 +61,15 @@ class ChatState:
     decisions: dict[str, str] = field(default_factory=dict)
     comments: dict[str, str] = field(default_factory=dict)
     awaiting_comment_for: str | None = None
+    # Момент выдачи ссылки /auth: следующее сообщение считаем кодом.
+    oauth_started_at: float | None = None
+
+    @property
+    def oauth_expired(self) -> bool:
+        if self.oauth_started_at is None:
+            return False
+        limit = settings.oauth_wait_minutes
+        return limit > 0 and time.monotonic() - self.oauth_started_at > limit * 60
 
 
 class TelegramBot:
@@ -82,16 +93,18 @@ class TelegramBot:
         self._stop.set()
 
     def run(self) -> None:
-        try:
-            me = self._api.get_me()
-            logger.info(
-                "Telegram-бот @%s запущен, разрешено пользователей: %s",
-                me.get("username", "?"),
-                len(self._allowed),
-            )
-        except TelegramError as exc:
-            logger.error("Не удалось запустить бота: %s", exc)
-            return
+        """Читает обновления, пока не позовут stop().
+
+        Ошибку запуска наружу не гасим: перезапуском занимается надзор
+        (app/telegram/supervisor.py), а молча вернувшийся поток выглядел бы
+        как работающий бот.
+        """
+        me = self._api.get_me()
+        logger.info(
+            "Telegram-бот @%s запущен, разрешено пользователей: %s",
+            me.get("username", "?"),
+            len(self._allowed),
+        )
 
         backoff = 1.0
         while not self._stop.is_set():
@@ -111,6 +124,13 @@ class TelegramBot:
                     self._handle_update(update)
                 except Exception:  # noqa: BLE001 — один сбой не должен ронять бота
                     logger.exception("Сбой обработки обновления %s", update.get("update_id"))
+
+            # Сроки идут своим ходом, даже когда пользователь молчит: длинный
+            # опрос возвращается не реже раза в telegram_poll_timeout секунд.
+            try:
+                self.sweep_expired()
+            except Exception:  # noqa: BLE001
+                logger.exception("Сбой при снятии просроченных подтверждений")
 
         logger.info("Telegram-бот остановлен")
 
@@ -157,6 +177,11 @@ class TelegramBot:
 
         state = self._states.setdefault(chat_id, ChatState())
 
+        # Ожидаем код авторизации Google после /auth.
+        if state.oauth_started_at is not None:
+            self._handle_oauth_code(chat_id, state, text)
+            return
+
         # Ожидаем текст правок к отклонённому действию.
         if state.awaiting_comment_for:
             tool_use_id = state.awaiting_comment_for
@@ -186,8 +211,80 @@ class TelegramBot:
             self._api.send_message(chat_id, "Диалог очищен. Слушаю.")
         elif command == "status":
             self._api.send_message(chat_id, self._status_text(), parse_mode="HTML")
+        elif command == "auth":
+            self._handle_auth(chat_id)
         else:
-            self._api.send_message(chat_id, "Неизвестная команда. Есть /new, /status, /help.")
+            self._api.send_message(
+                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /help."
+            )
+
+    # --- подключение Google ---
+
+    def _handle_auth(self, chat_id: int) -> None:
+        """Выдаёт ссылку авторизации и переводит чат в ожидание кода.
+
+        Без этой команды переавторизация означала бы ручной перенос файла
+        токена на сервер — то есть в реальности не делалась бы никогда.
+        """
+        state = self._states.setdefault(chat_id, ChatState())
+        if state.cards or state.awaiting_comment_for:
+            self._api.send_message(
+                chat_id, "Сначала закройте запрос подтверждения выше, потом /auth."
+            )
+            return
+
+        try:
+            url = google_oauth.authorization_url()
+        except google_oauth.OAuthError as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+
+        state.oauth_started_at = time.monotonic()
+        current = google_client.status()
+        prefix = (
+            f"Google уже подключён ({escape(current.get('account_hint', '') or 'учётная запись определена')}). "
+            "Новая авторизация заменит текущий доступ.\n\n"
+            if current.get("connected")
+            else ""
+        )
+        self._api.send_message(
+            chat_id,
+            f"{prefix}<b>Подключение Google</b>\n\n"
+            f'<a href="{escape(url)}">Открыть страницу доступа</a>\n\n'
+            + escape(google_oauth.instructions()),
+        )
+
+    def _handle_oauth_code(self, chat_id: int, state: ChatState, text: str) -> None:
+        if not google_oauth.looks_like_code(text):
+            state.oauth_started_at = None
+            self._api.send_message(
+                chat_id,
+                "Это не похоже на код авторизации — режим ожидания снят, "
+                "сообщение не обработано. Повторите /auth, если хотели подключить Google.",
+            )
+            return
+
+        state.oauth_started_at = None
+        try:
+            result = google_oauth.exchange_code(text)
+        except google_oauth.OAuthError as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+
+        lines = ["✅ <b>Google подключён</b>"]
+        if result.get("account"):
+            lines.append(f"Учётная запись: {escape(result['account'])}")
+        lines.append(
+            "Токен сохранён " + ("в зашифрованном виде." if result["encrypted"] else "БЕЗ шифрования — задайте OPERON_TOKEN_KEY.")
+        )
+        lines.append("")
+        lines.append("Выданные разрешения:")
+        lines.extend(f"• {escape(s)}" for s in result["scopes"])
+        if result["missing_scopes"]:
+            lines.append("")
+            lines.append("⚠️ НЕ выданы (часть функций не заработает):")
+            lines.extend(f"• {escape(s)}" for s in result["missing_scopes"])
+        self._api.send_message(chat_id, "\n".join(lines))
 
     def _status_text(self) -> str:
         kb = knowledge_base.stats
@@ -202,6 +299,7 @@ class TelegramBot:
             lines.append(f"Google: подключён {escape(google.get('account_hint', ''))}")
         else:
             lines.append(f"Google: не подключён — {escape(str(google.get('reason', '')))}")
+            lines.append("Подключить: /auth")
 
         from ..tools import registry
 
@@ -298,7 +396,11 @@ class TelegramBot:
                     shown = shown[:600] + "…"
                 lines.append(f"<b>{escape(str(key))}:</b> {escape(shown)}")
         lines.append("")
-        lines.append("<i>Действие выполнится только после подтверждения.</i>")
+        ttl = settings.confirmation_ttl_minutes
+        lines.append(
+            "<i>Действие выполнится только после подтверждения."
+            + (f" Без ответа за {ttl} мин — отмена.</i>" if ttl > 0 else "</i>")
+        )
         return "\n".join(line for line in lines if line is not None)
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
@@ -344,6 +446,47 @@ class TelegramBot:
 
         self._maybe_resume(chat_id)
 
+    def sweep_expired(self) -> None:
+        """Гасит просроченные карточки и ожидания кода.
+
+        «Нет ответа = отказ» должно наступать само: пользователь может закрыть
+        Telegram и не вернуться, а замороженный ход не отпустит диалог, пока
+        кто-то его не закроет.
+        """
+        for chat_id in list(self._states):
+            state = self._states.get(chat_id)
+            if state is None:
+                continue
+
+            if state.oauth_expired:
+                state.oauth_started_at = None
+                self._api.send_message(
+                    chat_id,
+                    f"Код авторизации так и не пришёл за {settings.oauth_wait_minutes} мин — "
+                    "ожидание снято. Начните заново: /auth",
+                )
+
+            session = store.get(f"tg-{chat_id}")
+            if session is None or session.pending is None or not session.pending.expired:
+                continue
+
+            for card in state.cards.values():
+                self._api.edit_message_text(
+                    chat_id,
+                    card.message_id,
+                    f"<b>{escape(card.title)}</b>\n{escape(EXPIRED_MARK)}",
+                    reply_markup={"inline_keyboard": []},
+                )
+
+            decisions = dict(state.decisions)
+            comments = dict(state.comments)
+            state.cards.clear()
+            state.decisions.clear()
+            state.comments.clear()
+            state.awaiting_comment_for = None
+            logger.info("Чат %s: подтверждение просрочено, действия отменены", chat_id)
+            self._run_turn(chat_id, self._agent.expire_pending(session, decisions, comments))
+
     def _maybe_resume(self, chat_id: int) -> None:
         """Продолжает ход, когда решения приняты по всем карточкам."""
         state = self._states.get(chat_id)
@@ -356,7 +499,12 @@ class TelegramBot:
         state.comments.clear()
 
         session = store.get(f"tg-{chat_id}")
-        if session is None or not session.awaiting_confirmation:
+        if session is None or session.pending is None:
+            return
+        if session.pending.expired:
+            # Кнопку нажали, но срок уже вышел: закрываем ход отказом, а не
+            # тишиной — иначе диалог останется замороженным навсегда.
+            self._run_turn(chat_id, self._agent.expire_pending(session, decisions, comments))
             return
         self._run_turn(chat_id, self._agent.resume_with_decisions(session, decisions, comments))
 
@@ -365,14 +513,20 @@ def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     )
+    from .supervisor import TelegramSupervisor
+
+    supervisor = TelegramSupervisor()
     if not settings.telegram_token:
         logger.error("Не задан TELEGRAM_BOT_TOKEN")
         return 1
-    try:
-        TelegramBot().run()
-    except TelegramError as exc:
-        logger.error("%s", exc)
+    if not settings.telegram_allowed_users:
+        logger.error("Не задан TELEGRAM_ALLOWED_USERS — без белого списка бот не запускается")
         return 1
+    try:
+        # Отдельный процесс — тот же надзор: сбой не должен оставлять без бота.
+        supervisor.run_forever()
+    except KeyboardInterrupt:
+        supervisor.stop()
     return 0
 
 

@@ -253,8 +253,9 @@ function createAssistantTurn() {
 /* Карточка подтверждения                                              */
 /* ------------------------------------------------------------------ */
 
-function buildConfirmation(actions, onSubmit) {
+function buildConfirmation(actions, expiresInMinutes, onSubmit) {
   const wrapper = document.createElement("div");
+  const expiries = [];
   const cards = actions.map((action) => {
     const card = document.createElement("div");
     card.className = "confirm";
@@ -332,6 +333,18 @@ function buildConfirmation(actions, onSubmit) {
     approve.addEventListener("click", () => settle("approve"));
     reject.addEventListener("click", () => settle("reject"));
 
+    // Молчание — это отказ, и отказ наступает по времени. Пользователь должен
+    // видеть срок, а не обнаруживать его постфактум.
+    expiries.push(() => {
+      if (decision !== null) return;
+      card.classList.add("resolved");
+      actionsRow.innerHTML = "";
+      const verdict = document.createElement("span");
+      verdict.className = "confirm-verdict rejected";
+      verdict.textContent = "⌛ Время вышло — действие отменено";
+      actionsRow.appendChild(verdict);
+    });
+
     wrapper.appendChild(card);
     return {
       action,
@@ -342,6 +355,7 @@ function buildConfirmation(actions, onSubmit) {
 
   function maybeSubmit() {
     if (cards.some((c) => c.decision === null)) return;
+    if (countdown) clearInterval(countdown);
     onSubmit(
       cards.map((c) => ({
         tool_use_id: c.action.tool_use_id,
@@ -349,6 +363,28 @@ function buildConfirmation(actions, onSubmit) {
         comment: c.comment,
       }))
     );
+  }
+
+  let countdown = null;
+  if (expiresInMinutes > 0) {
+    const deadline = Date.now() + expiresInMinutes * 60000;
+    const note = document.createElement("div");
+    note.className = "confirm-deadline";
+    wrapper.appendChild(note);
+
+    const tick = () => {
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 60000));
+      if (left > 0) {
+        note.textContent = `Без ответа действие отменяется автоматически (осталось ~${left} мин).`;
+        return;
+      }
+      clearInterval(countdown);
+      countdown = null;
+      note.textContent = "Срок ответа истёк — неподтверждённые действия отменены.";
+      expiries.forEach((expire) => expire());
+    };
+    tick();
+    countdown = setInterval(tick, 15000);
   }
 
   return wrapper;
@@ -430,7 +466,7 @@ function handleEvent(event, turn) {
     case "confirmation_required":
       turn.finishText();
       turn.mount(
-        buildConfirmation(event.actions, (decisions) => {
+        buildConfirmation(event.actions, event.expires_in_minutes || 0, (decisions) => {
           const next = createAssistantTurn();
           setBusy(true);
           streamRequest("/api/confirm", { session_id: sessionId, decisions }, next)

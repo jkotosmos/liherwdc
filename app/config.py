@@ -104,6 +104,13 @@ class Settings:
     # --- Ограничения ---
     max_history_messages: int = _int("OPERON_MAX_HISTORY", 200)
     session_ttl_minutes: int = _int("OPERON_SESSION_TTL_MINUTES", 720)
+    # Сколько ждать ответа на карточку подтверждения. Молчание = отказ, но
+    # без срока «отказ» никогда не наступает и диалог висит вечно. 0 — не ждать
+    # ограниченно (карточка живёт, пока жива сессия).
+    confirmation_ttl_minutes: int = _int("OPERON_CONFIRMATION_TTL_MINUTES", 30)
+    # Сколько бот ждёт код авторизации Google после /auth. Сам код Google
+    # живёт около 10 минут, дольше ждать нет смысла.
+    oauth_wait_minutes: int = _int("OPERON_OAUTH_WAIT_MINUTES", 15)
 
     google_scopes: tuple[str, ...] = field(
         default_factory=lambda: tuple(
@@ -111,12 +118,17 @@ class Settings:
             for s in os.getenv(
                 "OPERON_GOOGLE_SCOPES",
                 # Минимальный набор: каждый лишний scope — лишний риск.
-                # drive.readonly   — чтение доступных пользователю файлов;
-                # calendar.events  — чтение и запись событий (запись — только
-                #                    после подтверждения пользователя).
-                # Для создания файлов на Диске (протоколы, КП) добавьте
-                # https://www.googleapis.com/auth/drive.file
+                # drive.readonly   — чтение файлов, доступных пользователю;
+                # drive.file       — создание файлов и доступ ТОЛЬКО к тем,
+                #                    которые создал сам агент (протоколы, КП);
+                #                    чужие файлы этим scope'ом не изменить;
+                # calendar.events  — чтение и запись событий.
+                # Любая запись (Диск и календарь) выполняется только после
+                # подтверждения пользователя — это проверяет рантайм, не промпт.
+                # Менять набор — значит проходить OAuth заново: старый токен
+                # выдан под старые scope'ы и новых прав не получит.
                 "https://www.googleapis.com/auth/drive.readonly "
+                "https://www.googleapis.com/auth/drive.file "
                 "https://www.googleapis.com/auth/calendar.events",
             ).split()
             if s
@@ -248,6 +260,16 @@ class Settings:
     @property
     def google_token_path(self) -> Path:
         return self.credentials_dir / "google_token.json"
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        """Куда Google вернёт код. Для клиента типа Desktop подходит любой localhost.
+
+        Слушать этот адрес некому: пользователь копирует ссылку из адресной
+        строки и вставляет её боту. Так авторизация не требует доступа к
+        серверу и повторного переноса файлов.
+        """
+        return (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "http://localhost:8765/").strip()
 
     @property
     def google_client_secret_path(self) -> Path:

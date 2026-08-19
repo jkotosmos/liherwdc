@@ -61,26 +61,6 @@ def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
     }
 
 
-def _calendar_list_calendars(_: dict[str, Any]) -> Any:
-    try:
-        items = _calendar().calendarList().list(maxResults=100).execute().get("items", [])
-    except HttpError as exc:
-        raise ToolError(describe_http_error(exc, "Список календарей")) from exc
-    return {
-        "status": "ok",
-        "calendars": [
-            {
-                "calendar_id": c.get("id"),
-                "name": c.get("summary"),
-                "primary": bool(c.get("primary")),
-                "access_role": c.get("accessRole"),
-                "timezone": c.get("timeZone"),
-            }
-            for c in items
-        ],
-    }
-
-
 def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
     calendar_id = (tool_input.get("calendar_id") or "primary").strip()
     now = datetime.now(settings.tz)
@@ -310,16 +290,6 @@ def _preview_delete(tool_input: dict[str, Any]) -> Preview:
 
 registry.register(
     ToolSpec(
-        name="calendar_list_calendars",
-        description="Список календарей, доступных пользователю, с уровнем доступа к каждому.",
-        input_schema={"type": "object", "properties": {}},
-        handler=_calendar_list_calendars,
-        activity="Смотрю список календарей",
-    )
-)
-
-registry.register(
-    ToolSpec(
         name="calendar_list_events",
         description=(
             "Показывает встречи и сроки из Google Calendar за период. По умолчанию — ближайшие "
@@ -331,7 +301,14 @@ registry.register(
             "properties": {
                 "time_min": {"type": "string", "description": "Начало периода: YYYY-MM-DD или YYYY-MM-DDTHH:MM."},
                 "time_max": {"type": "string", "description": "Конец периода: YYYY-MM-DD или YYYY-MM-DDTHH:MM."},
-                "calendar_id": {"type": "string", "description": "По умолчанию primary."},
+                "calendar_id": {
+                    "type": "string",
+                    "description": (
+                        "Не указывай без необходимости — по умолчанию основной календарь "
+                        "(primary). Другой идентификатор используй, только если его назвал "
+                        "сам пользователь: списка календарей у агента нет."
+                    ),
+                },
                 "query": {"type": "string", "description": "Фильтр по тексту события."},
                 "max_results": {"type": "integer", "description": "Максимум событий (1–250), по умолчанию 50."},
             },
@@ -374,7 +351,14 @@ registry.register(
                     "type": "integer",
                     "description": "За сколько минут напомнить.",
                 },
-                "calendar_id": {"type": "string", "description": "По умолчанию primary."},
+                "calendar_id": {
+                    "type": "string",
+                    "description": (
+                        "Не указывай без необходимости — по умолчанию основной календарь "
+                        "(primary). Другой идентификатор используй, только если его назвал "
+                        "сам пользователь: списка календарей у агента нет."
+                    ),
+                },
             },
             "required": ["title", "start"],
         },
@@ -396,7 +380,14 @@ registry.register(
             "type": "object",
             "properties": {
                 "event_id": {"type": "string", "description": "Идентификатор события из calendar_list_events."},
-                "calendar_id": {"type": "string", "description": "По умолчанию primary."},
+                "calendar_id": {
+                    "type": "string",
+                    "description": (
+                        "Не указывай без необходимости — по умолчанию основной календарь "
+                        "(primary). Другой идентификатор используй, только если его назвал "
+                        "сам пользователь: списка календарей у агента нет."
+                    ),
+                },
                 "title": {"type": "string"},
                 "start": {"type": "string"},
                 "end": {"type": "string"},
@@ -423,7 +414,14 @@ registry.register(
             "type": "object",
             "properties": {
                 "event_id": {"type": "string", "description": "Идентификатор события."},
-                "calendar_id": {"type": "string", "description": "По умолчанию primary."},
+                "calendar_id": {
+                    "type": "string",
+                    "description": (
+                        "Не указывай без необходимости — по умолчанию основной календарь "
+                        "(primary). Другой идентификатор используй, только если его назвал "
+                        "сам пользователь: списка календарей у агента нет."
+                    ),
+                },
             },
             "required": ["event_id"],
         },
