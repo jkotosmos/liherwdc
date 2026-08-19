@@ -42,11 +42,18 @@ def main() -> int:
     flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), list(settings.google_scopes))
     creds = flow.run_local_server(port=0, prompt="consent")
 
-    settings.google_token_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.google_token_path.write_text(creds.to_json(), encoding="utf-8")
-    settings.google_token_path.chmod(0o600)
+    from . import token_store
 
-    print(f"Токен сохранён: {settings.google_token_path}")
+    path = token_store.save_token(creds.to_json())
+
+    print(f"Токен сохранён: {path}")
+    if token_store.encryption_enabled():
+        print("Файл зашифрован (OPERON_TOKEN_KEY задан).")
+        print("Для переноса на сервер скопируйте и файл токена, и token_salt.bin,")
+        print("и задайте там ту же OPERON_TOKEN_KEY.")
+    else:
+        print("ВНИМАНИЕ: токен не зашифрован. Перед переносом на сервер задайте")
+        print("OPERON_TOKEN_KEY и выполните авторизацию заново.")
     print("Выданные разрешения:")
     for scope in creds.scopes or []:
         print(f"  • {scope}")

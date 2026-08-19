@@ -14,6 +14,7 @@ from typing import Any
 
 from ..config import settings
 from ..errors import IntegrationUnavailable
+from . import token_store
 
 try:  # Google-библиотеки опциональны: без них агент запускается, но интеграции выключены.
     from google.auth.transport.requests import AuthorizedSession, Request
@@ -58,12 +59,17 @@ def _load_credentials() -> Any:
         if _cached is not None and _cached.valid:
             return _cached
 
-        token_path: Path = settings.google_token_path
-        if not token_path.exists():
+        try:
+            payload = token_store.load_token()
+        except token_store.TokenDecryptionError as exc:
+            raise IntegrationUnavailable(str(exc)) from exc
+        if payload is None:
             raise IntegrationUnavailable(SETUP_HINT)
 
         try:
-            creds = Credentials.from_authorized_user_file(str(token_path), list(settings.google_scopes))
+            creds = Credentials.from_authorized_user_info(
+                json.loads(payload), list(settings.google_scopes)
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             raise IntegrationUnavailable(
                 f"Файл токена Google повреждён ({exc}). Пройдите авторизацию заново: "
@@ -74,7 +80,7 @@ def _load_credentials() -> Any:
             if creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    token_path.write_text(creds.to_json(), encoding="utf-8")
+                    token_store.save_token(creds.to_json())
                 except Exception as exc:  # noqa: BLE001
                     raise IntegrationUnavailable(
                         f"Не удалось обновить токен Google ({exc}). Пройдите авторизацию заново: "
@@ -136,7 +142,7 @@ def status() -> dict[str, Any]:
             "reason": "Библиотеки Google API не установлены",
             "hint": "pip install -r requirements.txt",
         }
-    if not settings.google_token_path.exists():
+    if not token_store.token_exists():
         return {
             "connected": False,
             "reason": "Нет OAuth-токена пользователя",
@@ -151,6 +157,7 @@ def status() -> dict[str, Any]:
         "connected": True,
         "scopes": list(getattr(creds, "scopes", []) or settings.google_scopes),
         "account_hint": _account_email(),
+        "token": token_store.describe(),
     }
 
 

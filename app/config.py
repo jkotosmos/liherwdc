@@ -97,6 +97,10 @@ class Settings:
     session_secret: str = os.getenv("OPERON_SESSION_SECRET", "")
     auth_ttl_hours: int = _int("OPERON_AUTH_TTL_HOURS", 168)
 
+    # --- Telegram ---
+    telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_poll_timeout: int = _int("TELEGRAM_POLL_TIMEOUT", 30)
+
     # --- Ограничения ---
     max_history_messages: int = _int("OPERON_MAX_HISTORY", 200)
     session_ttl_minutes: int = _int("OPERON_SESSION_TTL_MINUTES", 720)
@@ -106,12 +110,14 @@ class Settings:
             s
             for s in os.getenv(
                 "OPERON_GOOGLE_SCOPES",
-                # drive.readonly — чтение любых доступных пользователю файлов;
-                # drive.file — запись только в файлы, созданные этим приложением;
-                # calendar   — чтение и запись событий (запись только с подтверждением).
+                # Минимальный набор: каждый лишний scope — лишний риск.
+                # drive.readonly   — чтение доступных пользователю файлов;
+                # calendar.events  — чтение и запись событий (запись — только
+                #                    после подтверждения пользователя).
+                # Для создания файлов на Диске (протоколы, КП) добавьте
+                # https://www.googleapis.com/auth/drive.file
                 "https://www.googleapis.com/auth/drive.readonly "
-                "https://www.googleapis.com/auth/drive.file "
-                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/calendar.events",
             ).split()
             if s
         )
@@ -212,6 +218,25 @@ class Settings:
     @property
     def auth_required(self) -> bool:
         return bool(self.access_password)
+
+    @property
+    def telegram_allowed_users(self) -> frozenset[int]:
+        """Белый список Telegram ID. Единственная граница доступа к боту.
+
+        Бот работает с Google-аккаунтом владельца, поэтому любое сообщение
+        не из этого списка игнорируется молча — без списка бот не стартует.
+        """
+        raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+        ids = set()
+        for part in raw.replace(";", ",").split(","):
+            part = part.strip()
+            if part.lstrip("-").isdigit():
+                ids.add(int(part))
+        return frozenset(ids)
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_token and self.telegram_allowed_users)
 
     @property
     def tz(self) -> ZoneInfo:
