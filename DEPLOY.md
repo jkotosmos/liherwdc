@@ -11,10 +11,95 @@
 | Ключ RouterAI | личный кабинет [routerai.ru](https://routerai.ru/) | **да** |
 | Точное имя модели | покажет `python -m app.probe` из вашего каталога | **да** |
 | Пароль на вход | придумываете сами | **да** |
+| Парольная фраза для токена | придумываете сами (`OPERON_TOKEN_KEY`) | **да** |
 | Проект в Amvera | панель Amvera → «Создать проект» | **да** |
-| Ключ поискового API | Tavily / Brave / Serper / Google CSE — для работы с интернетом | желательно |
+| Токен Telegram-бота | [@BotFather](https://t.me/BotFather) | **да** |
+| Свой Telegram ID | [@userinfobot](https://t.me/userinfobot) | **да** |
+| OAuth-клиент Google | Google Cloud Console → Credentials | для Диска и календаря |
+| Ключ поискового API | Tavily / Brave / Serper / Google CSE | для интернета |
 | Документы базы знаний | ваши файлы (`.md`, `.csv`, `.json`) | позже |
-| OAuth-клиент Google | Google Cloud Console | опционально |
+
+### Где именно брать каждый ключ
+
+**1. RouterAI — доступ к модели.** Личный кабинет на
+[routerai.ru](https://routerai.ru/) → раздел с API-ключами → создать ключ.
+Вид: `sk-…`. Оплата из России, совместим с API OpenAI, адрес и протокол
+подставляются автоматически. Кладётся в `ROUTERAI_API_KEY`.
+
+Ключ виден один раз при создании — сохраните сразу. Утёк (попал в переписку,
+скриншот, репозиторий) — перевыпустите: это дешевле разбирательств со счётом.
+
+**2. Имя модели — не ключ, но без него не стартует.** У шлюза свой каталог,
+угадывать нельзя. `python -m app.probe` с вашей машины выведет список и
+проверит вызов инструментов. Кладётся в `OPERON_MODEL`.
+
+**3. Telegram — токен бота.** В Telegram напишите
+[@BotFather](https://t.me/BotFather) → `/newbot` → имя и адрес бота (адрес
+должен заканчиваться на `bot`). В ответ придёт строка вида
+`1234567890:AAH…`. Кладётся в `TELEGRAM_BOT_TOKEN`.
+
+Потерялся — `/mybots` → бот → *API Token* → *Revoke current token*.
+
+**4. Telegram — свой ID.** Напишите [@userinfobot](https://t.me/userinfobot)
+любое сообщение, он ответит числом. Кладётся в `TELEGRAM_ALLOWED_USERS`
+(несколько — через запятую).
+
+Это **не ключ, а единственная граница безопасности всей системы**: бот
+работает с вашим Google-аккаунтом и вашим бюджетом API. Без белого списка
+бот не запускается, и это намеренно.
+
+**5. Google — OAuth-клиент (файл, а не ключ).**
+[console.cloud.google.com](https://console.cloud.google.com/) →
+
+1. создать проект (или выбрать существующий);
+2. **APIs & Services → Library** → включить **Google Drive API** и
+   **Google Calendar API**;
+3. **OAuth consent screen** → тип **External** → заполнить название и почту →
+   **Publish app** (статус станет *In production*). **На верификацию не
+   подавать** — она нужна публичным приложениям со многими пользователями.
+   Статус *Testing* оставлять нельзя: согласия в нём протухают через 7 дней;
+4. **Credentials → Create credentials → OAuth client ID** → тип
+   **Desktop app** → **Download JSON**.
+
+Скачанный файл переименовать в `client_secret.json` и положить в
+`/data/credentials/` через панель Amvera. Дальше — команда `/auth` в боте,
+переносить что-либо ещё не придётся.
+
+Внутри файла лежит `client_secret` — это тоже секрет, в репозиторий он не
+коммитится (`.gitignore` исключает `client_secret*.json`).
+
+**6. Поиск в интернете — любой один ключ.** Через сторонний шлюз серверный
+поиск Anthropic недоступен, поэтому нужен собственный поставщик. Порядок
+выбора автоматический: Tavily → Brave → Serper → Google CSE; принудительно
+задаётся через `OPERON_SEARCH_PROVIDER`.
+
+| Поставщик | Где взять | Переменные |
+|---|---|---|
+| **Tavily** (проще всего) | [tavily.com](https://tavily.com/) → регистрация → API Keys | `TAVILY_API_KEY` |
+| Brave Search | [brave.com/search/api](https://brave.com/search/api/) → подписка на план | `BRAVE_API_KEY` |
+| Serper | [serper.dev](https://serper.dev/) → регистрация → Dashboard | `SERPER_API_KEY` |
+| Google CSE | [console.cloud.google.com](https://console.cloud.google.com/) (ключ) + [programmablesearchengine.google.com](https://programmablesearchengine.google.com/) (движок) | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_ID` |
+
+У всех четырёх есть бесплатный уровень, но лимиты и условия меняются —
+смотрите актуальные на сайте поставщика. Tavily сделан под задачи агентов:
+возвращает готовые выдержки, а не список ссылок.
+
+Без ключа поиска агент не выдумывает, а честно сообщает, что интернет-поиск
+не настроен, — но пункт ТЗ про внешние данные будет закрыт лишь наполовину.
+
+**7. Два секрета, которые вы придумываете сами.**
+
+| Переменная | Зачем | Что будет, если потерять |
+|---|---|---|
+| `OPERON_ACCESS_PASSWORD` | пароль на вход в веб-чат | задать новый в панели |
+| `OPERON_TOKEN_KEY` | шифрует токен Google на диске | токен не расшифруется, спасёт только новый `/auth` |
+
+`OPERON_TOKEN_KEY` **запишите в надёжном месте сразу**. Шифрование защищает
+от утёкшего бэкапа диска, но не от скомпрометированного процесса: ключ лежит
+в переменных окружения той же машины. Полезно, но не переоценивайте.
+
+`OPERON_SESSION_SECRET` задавать не нужно — сгенерируется и сохранится на
+диск при первом запуске.
 
 ### Проверка перед развёртыванием
 
@@ -42,7 +127,10 @@ python -m app.probe
 ```
 ROUTERAI_API_KEY         <ключ RouterAI>
 OPERON_MODEL             <имя модели из app.probe>
-OPERON_ACCESS_PASSWORD   <ваш пароль>
+OPERON_ACCESS_PASSWORD   <ваш пароль на веб-чат>
+OPERON_TOKEN_KEY         <парольная фраза для шифрования токена Google>
+TELEGRAM_BOT_TOKEN       <токен от @BotFather>
+TELEGRAM_ALLOWED_USERS   <ваш Telegram ID от @userinfobot>
 OPERON_PUBLIC_URL        https://<проект>.amvera.io
 OPERON_ORG_NAME          OPERON
 OPERON_TIMEZONE          Europe/Moscow
