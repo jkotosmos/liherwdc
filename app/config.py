@@ -11,7 +11,41 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-load_dotenv(BASE_DIR / ".env")
+# Постоянный диск Amvera (persistenceMount). Единственное место в контейнере,
+# которое переживает передеплой, — и единственное, куда пользователь может
+# положить файл через панель.
+PERSIST_DIR = Path(os.getenv("OPERON_PERSIST_DIR", "/data"))
+
+
+def _load_env_files() -> list[Path]:
+    """Читает .env из всех мест, где он может лежать. Возвращает найденные.
+
+    Порядок важен: побеждает то, что прочитано раньше, а переменные, уже
+    заданные в окружении (панель Amvera), не перекрываются ничем — так
+    настройка через панель всегда сильнее файла.
+
+    Файл на постоянном диске нужен затем, что в панели Amvera переменные
+    задаются по одной, а загрузить один файл — быстрее и труднее ошибиться.
+    """
+    candidates = []
+    explicit = os.getenv("OPERON_ENV_FILE")
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.append(PERSIST_DIR / ".env")
+    candidates.append(BASE_DIR / ".env")
+
+    loaded = []
+    for path in candidates:
+        try:
+            if path.is_file():
+                load_dotenv(path)
+                loaded.append(path)
+        except OSError:  # pragma: no cover — недоступный путь не должен ронять старт
+            continue
+    return loaded
+
+
+ENV_FILES_LOADED = _load_env_files()
 
 # Провайдеры доступа к модели. Anthropic-совместимый протокол поддерживают оба,
 # поэтому код агента одинаков — различаются адрес, ключ и набор возможностей.

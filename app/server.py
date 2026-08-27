@@ -334,6 +334,13 @@ if STATIC_DIR.exists():
 
 
 def _startup_report() -> None:
+    from .config import ENV_FILES_LOADED
+
+    if ENV_FILES_LOADED:
+        logger.info(
+            "Настройки прочитаны из файлов: %s",
+            ", ".join(str(path) for path in ENV_FILES_LOADED),
+        )
     kb = knowledge_base.stats
     logger.info(
         "Провайдер: %s | модель: %s | адрес: %s",

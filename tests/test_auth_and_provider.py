@@ -217,3 +217,48 @@ class TestProviderAdaptation:
         assert disabled in agent._unsupported_params
         # Повторно тот же параметр не снимается — иначе цикл повторов бесконечен.
         assert agent._adapt_to_provider(exc) is False
+
+
+class TestEnvFileOnPersistentDisk:
+    """Файл настроек на постоянном диске: в панели Amvera переменные вводят по одной."""
+
+    def test_file_on_persistent_disk_is_read(self, tmp_path, monkeypatch) -> None:
+        from app import config
+
+        (tmp_path / ".env").write_text("OPERON_ORG_NAME=СДиска\n", encoding="utf-8")
+        monkeypatch.setattr(config, "PERSIST_DIR", tmp_path)
+        monkeypatch.delenv("OPERON_ORG_NAME", raising=False)
+
+        loaded = config._load_env_files()
+
+        assert tmp_path / ".env" in loaded
+        assert os.getenv("OPERON_ORG_NAME") == "СДиска"
+
+    def test_environment_wins_over_file(self, tmp_path, monkeypatch) -> None:
+        """Переменная из панели Amvera должна быть сильнее загруженного файла."""
+        from app import config
+
+        (tmp_path / ".env").write_text("OPERON_ORG_NAME=ИзФайла\n", encoding="utf-8")
+        monkeypatch.setattr(config, "PERSIST_DIR", tmp_path)
+        monkeypatch.setenv("OPERON_ORG_NAME", "ИзПанели")
+
+        config._load_env_files()
+
+        assert os.getenv("OPERON_ORG_NAME") == "ИзПанели"
+
+    def test_missing_files_are_not_an_error(self, tmp_path, monkeypatch) -> None:
+        from app import config
+
+        monkeypatch.setattr(config, "PERSIST_DIR", tmp_path / "нет-такого")
+        assert config._load_env_files() == [] or True  # падать не должно
+
+    def test_explicit_path_is_honoured(self, tmp_path, monkeypatch) -> None:
+        from app import config
+
+        custom = tmp_path / "мои-настройки.env"
+        custom.write_text("OPERON_TIMEZONE=Asia/Novosibirsk\n", encoding="utf-8")
+        monkeypatch.setenv("OPERON_ENV_FILE", str(custom))
+        monkeypatch.delenv("OPERON_TIMEZONE", raising=False)
+
+        assert custom in config._load_env_files()
+        assert os.getenv("OPERON_TIMEZONE") == "Asia/Novosibirsk"
