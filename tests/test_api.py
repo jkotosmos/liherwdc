@@ -178,3 +178,65 @@ class TestSessionReset:
 
         client.post("/api/session/reset", json={"session_id": session_id})
         assert store.get(session_id).messages == []
+
+
+class TestOAuthCallback:
+    """Адрес возврата Google: доступен без входа, но пускает только по state."""
+
+    def test_callback_is_reachable_without_login(self, client: TestClient) -> None:
+        """Браузер приводит сюда Google — куки приложения там может не быть."""
+        response = client.get("/oauth2/callback")
+        assert response.status_code != 401
+        assert response.status_code != 303
+
+    def test_missing_code_is_explained(self, client: TestClient) -> None:
+        response = client.get("/oauth2/callback")
+        assert response.status_code == 400
+        assert "Кода нет" in response.text
+
+    def test_google_error_is_shown(self, client: TestClient) -> None:
+        response = client.get("/oauth2/callback?error=access_denied&state=x")
+        assert response.status_code == 400
+        assert "access_denied" in response.text
+
+    def test_unknown_state_is_refused(self, client: TestClient) -> None:
+        """Без этой проверки любой запрос к публичному адресу что-то подключал бы."""
+        response = client.get("/oauth2/callback?code=4/0Axyz_abcdefghijkl&state=подделка")
+        assert response.status_code == 400
+        assert "устарела" in response.text
+
+    def test_successful_exchange_reports_the_account(self, client: TestClient, monkeypatch) -> None:
+        from app.integrations import google_oauth
+
+        monkeypatch.setattr(
+            google_oauth,
+            "handle_callback",
+            lambda code, state: {
+                "account": "boss@operon.ru",
+                "encrypted": True,
+                "scopes": [],
+                "missing_scopes": [],
+            },
+        )
+        response = client.get("/oauth2/callback?code=4/0Axyz&state=st1")
+        assert response.status_code == 200
+        assert "Google подключён" in response.text
+        assert "boss@operon.ru" in response.text
+        assert "зашифрованном виде" in response.text
+
+    def test_missing_scopes_are_warned_about(self, client: TestClient, monkeypatch) -> None:
+        from app.integrations import google_oauth
+
+        monkeypatch.setattr(
+            google_oauth,
+            "handle_callback",
+            lambda code, state: {
+                "account": "",
+                "encrypted": False,
+                "scopes": [],
+                "missing_scopes": ["https://www.googleapis.com/auth/calendar.events"],
+            },
+        )
+        response = client.get("/oauth2/callback?code=4/0Axyz&state=st1")
+        assert "calendar.events" in response.text
+        assert "не выдана" in response.text

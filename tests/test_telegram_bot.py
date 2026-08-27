@@ -316,7 +316,9 @@ class TestAuthCommand:
     def test_auth_sends_link_and_waits_for_code(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
         monkeypatch.setattr(
-            bot_module.google_oauth, "authorization_url", lambda: "https://accounts.google.com/o/oauth2/auth?x=1"
+            bot_module.google_oauth,
+            "start",
+            lambda label="": ("https://accounts.google.com/o/oauth2/auth?x=1", "st1"),
         )
         bot._handle_update(message("/auth"))
 
@@ -327,7 +329,7 @@ class TestAuthCommand:
 
     def test_pasted_url_is_exchanged_for_a_token(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
-        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
         exchanged: list[str] = []
 
         def fake_exchange(text: str) -> dict:
@@ -353,7 +355,7 @@ class TestAuthCommand:
 
     def test_missing_scopes_are_reported(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
-        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
         monkeypatch.setattr(
             bot_module.google_oauth,
             "exchange_code",
@@ -373,7 +375,7 @@ class TestAuthCommand:
 
     def test_exchange_error_is_shown_verbatim(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
-        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
 
         def boom(text: str):
             raise bot_module.google_oauth.OAuthError("Google отклонил код (invalid_grant).")
@@ -385,7 +387,7 @@ class TestAuthCommand:
 
     def test_ordinary_question_does_not_get_swallowed_as_a_code(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
-        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
         monkeypatch.setattr(
             bot_module.google_oauth,
             "exchange_code",
@@ -463,14 +465,14 @@ class TestConfirmationTimeout:
 
     def test_expired_oauth_wait_is_released(self, monkeypatch) -> None:
         bot, api = make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
-        monkeypatch.setattr(bot_module.google_oauth, "authorization_url", lambda: "https://auth")
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
         bot._handle_update(message("/auth"))
         bot._states[1].oauth_started_at -= 10_000
 
         bot.sweep_expired()
 
         assert bot._states[1].oauth_started_at is None
-        assert "Код авторизации так и не пришёл" in api.texts()[-1]
+        assert "так и не пришёл" in api.texts()[-1]
 
     def test_silence_after_edits_button_does_not_hang_forever(self, monkeypatch) -> None:
         """Нажали «Правки» и пропали: ход всё равно обязан закрыться."""
@@ -494,3 +496,59 @@ class TestConfirmationTimeout:
 
         assert closed == [{"t1": "reject"}], "нажатая кнопка «Правки» — это отказ"
         assert bot._states[1].awaiting_comment_for is None
+
+
+class TestAuthViaCallback:
+    """Клиент типа Web: код приходит на сервер, вставлять в чат нечего."""
+
+    def _bot(self, monkeypatch):
+        bot, api = make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
+        monkeypatch.setattr(
+            bot_module.google_oauth, "start", lambda label="": ("https://auth", "st-web")
+        )
+        return bot, api
+
+    def test_bot_picks_up_the_result_by_itself(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        bot._handle_update(message("/auth"))
+        assert bot._states[1].oauth_state == "st-web"
+
+        from app.integrations.google_oauth import _Pending
+
+        ready = _Pending(created_at=0.0, label="telegram:1", done=True, result={
+            "encrypted": True, "account": "boss@operon.ru",
+            "scopes": ["https://www.googleapis.com/auth/drive.file"], "missing_scopes": [],
+        })
+        monkeypatch.setattr(
+            bot_module.google_oauth, "take_result", lambda state: ready if state == "st-web" else None
+        )
+
+        bot.sweep_expired()
+
+        assert "Google подключён" in api.texts()[-1]
+        assert "boss@operon.ru" in api.texts()[-1]
+        assert bot._states[1].oauth_state == "", "ожидание должно закрыться"
+
+    def test_callback_error_reaches_the_user(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        bot._handle_update(message("/auth"))
+
+        from app.integrations.google_oauth import _Pending
+
+        failed = _Pending(created_at=0.0, label="", done=True, error="Google отклонил код.")
+        monkeypatch.setattr(bot_module.google_oauth, "take_result", lambda state: failed)
+
+        bot.sweep_expired()
+        assert "отклонил код" in api.texts()[-1]
+        assert bot._states[1].oauth_state == ""
+
+    def test_nothing_is_said_while_the_user_is_still_deciding(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        bot._handle_update(message("/auth"))
+        before = len(api.texts())
+
+        monkeypatch.setattr(bot_module.google_oauth, "take_result", lambda state: None)
+        bot.sweep_expired()
+
+        assert len(api.texts()) == before, "пока Google молчит, боту сказать нечего"
+        assert bot._states[1].oauth_state == "st-web"

@@ -261,15 +261,47 @@ class Settings:
     def google_token_path(self) -> Path:
         return self.credentials_dir / "google_token.json"
 
+    # --- OAuth-клиент Google -------------------------------------------------
+    # Клиент можно задать двумя способами: файлом client_secret.json на диске
+    # или парой переменных окружения. Второй способ удобнее на Amvera —
+    # ничего не нужно загружать на постоянный диск.
+
+    @property
+    def google_client_id(self) -> str:
+        return (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+
+    @property
+    def google_client_secret_value(self) -> str:
+        return (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+
+    @property
+    def oauth_callback_path(self) -> str:
+        return "/oauth2/callback"
+
     @property
     def oauth_redirect_uri(self) -> str:
-        """Куда Google вернёт код. Для клиента типа Desktop подходит любой localhost.
+        """Куда Google вернёт код.
 
-        Слушать этот адрес некому: пользователь копирует ссылку из адресной
-        строки и вставляет её боту. Так авторизация не требует доступа к
-        серверу и повторного переноса файлов.
+        Клиент типа **Web application** обязан возвращать код на заранее
+        зарегистрированный адрес, и localhost для него не подходит — поэтому
+        по умолчанию берём публичный адрес приложения: код приходит прямо на
+        сервер, копировать ничего не нужно.
+
+        Клиенту типа **Desktop** годится любой localhost. Слушать его некому,
+        поэтому пользователь копирует адрес из строки браузера и отдаёт боту.
+        Этот режим включается, когда публичный адрес не задан.
         """
-        return (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "http://localhost:8765/").strip()
+        explicit = (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "").strip()
+        if explicit:
+            return explicit
+        if self.public_url:
+            return self.public_url + self.oauth_callback_path
+        return "http://localhost:8765/"
+
+    @property
+    def oauth_callback_enabled(self) -> bool:
+        """Код придёт на сервер сам, без копирования из адресной строки."""
+        return self.oauth_redirect_uri.rstrip("/").endswith(self.oauth_callback_path)
 
     @property
     def google_client_secret_path(self) -> Path:

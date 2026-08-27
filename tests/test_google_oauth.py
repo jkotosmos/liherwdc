@@ -70,9 +70,11 @@ class TestAuthorizationUrl:
         for scope in (DRIVE_READONLY, DRIVE_FILE, CALENDAR_EVENTS):
             assert scope.rsplit("/", 1)[-1] in url
 
-    def test_missing_client_secret_explains_where_to_get_it(self, monkeypatch, tmp_path) -> None:
+    def test_missing_client_secret_names_both_ways(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("OPERON_GOOGLE_CLIENT_SECRET", str(tmp_path / "нет.json"))
-        with pytest.raises(google_oauth.OAuthError, match="Desktop app"):
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+        with pytest.raises(google_oauth.OAuthError, match="GOOGLE_CLIENT_ID"):
             google_oauth.authorization_url()
 
     def test_web_client_with_foreign_redirect_is_refused(self, monkeypatch, tmp_path) -> None:
@@ -130,3 +132,105 @@ class TestInstructions:
         text = google_oauth.instructions()
         assert "ошибку соединения" in text
         assert settings.oauth_redirect_uri in text
+
+
+class TestEnvClient:
+    """Клиент из переменных окружения: на Amvera так проще, чем файлом."""
+
+    @pytest.fixture(autouse=True)
+    def env_client(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "305436247271-test.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "GOCSPX-env-test")
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_SECRET", str(tmp_path / "нет.json"))
+
+    def test_env_beats_missing_file(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "http://localhost:8765/")
+        url = google_oauth.authorization_url()
+        assert "305436247271-test" in url
+
+    def test_web_section_when_callback_is_used(self, monkeypatch) -> None:
+        """Публичный адрес приложения = клиент типа Web, секция «web»."""
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "https://operon.amvera.io/oauth2/callback")
+        config = google_oauth._config_from_env()
+        assert "web" in config and "installed" not in config
+        assert config["web"]["redirect_uris"] == ["https://operon.amvera.io/oauth2/callback"]
+
+    def test_installed_section_for_loopback(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "http://localhost:8765/")
+        config = google_oauth._config_from_env()
+        assert "installed" in config and "web" not in config
+
+    def test_describe_names_the_source(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "https://operon.amvera.io/oauth2/callback")
+        described = google_oauth.describe_client()
+        assert described["configured"] is True
+        assert described["source"] == "переменные окружения"
+        assert described["callback_mode"] is True
+
+
+class TestStateGate:
+    """Адрес возврата публичен — обменивать можно только код по выданной ссылке."""
+
+    @pytest.fixture(autouse=True)
+    def env_client(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "1-test.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "GOCSPX-env-test")
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_SECRET", str(tmp_path / "нет.json"))
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "https://operon.amvera.io/oauth2/callback")
+        google_oauth._pending.clear()
+
+    def test_unknown_state_is_refused(self) -> None:
+        with pytest.raises(google_oauth.OAuthError, match="неизвестна или устарела"):
+            google_oauth.handle_callback("4/0Axyz_abcdefghijkl", "подделанный-state")
+
+    def test_empty_state_is_refused(self) -> None:
+        with pytest.raises(google_oauth.OAuthError, match="неизвестна или устарела"):
+            google_oauth.handle_callback("4/0Axyz_abcdefghijkl", "")
+
+    def test_start_issues_unique_states(self) -> None:
+        _, first = google_oauth.start("telegram:1")
+        _, second = google_oauth.start("telegram:1")
+        assert first != second
+        assert len(first) >= 24
+        assert set(google_oauth._pending) == {first, second}
+
+    def test_state_travels_in_the_url(self) -> None:
+        url, state = google_oauth.start()
+        assert f"state={state}" in url
+
+    def test_result_is_taken_once(self, monkeypatch) -> None:
+        _, state = google_oauth.start("telegram:1")
+        monkeypatch.setattr(
+            google_oauth,
+            "exchange_code",
+            lambda text: {"encrypted": True, "scopes": [], "missing_scopes": [], "account": "a@b.c"},
+        )
+        google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
+
+        first = google_oauth.take_result(state)
+        assert first is not None and first.result["account"] == "a@b.c"
+        assert google_oauth.take_result(state) is None, "результат забирается ровно один раз"
+
+    def test_used_link_cannot_be_replayed(self, monkeypatch) -> None:
+        _, state = google_oauth.start("telegram:1")
+        monkeypatch.setattr(
+            google_oauth,
+            "exchange_code",
+            lambda text: {"encrypted": True, "scopes": [], "missing_scopes": [], "account": ""},
+        )
+        google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
+        with pytest.raises(google_oauth.OAuthError, match="уже использована"):
+            google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
+
+    def test_failed_exchange_is_remembered_for_the_bot(self, monkeypatch) -> None:
+        _, state = google_oauth.start("telegram:1")
+
+        def boom(text: str):
+            raise google_oauth.OAuthError("Google отклонил код (invalid_grant).")
+
+        monkeypatch.setattr(google_oauth, "exchange_code", boom)
+        with pytest.raises(google_oauth.OAuthError):
+            google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
+
+        entry = google_oauth.take_result(state)
+        assert entry is not None and "invalid_grant" in entry.error

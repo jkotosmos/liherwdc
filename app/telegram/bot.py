@@ -63,6 +63,9 @@ class ChatState:
     awaiting_comment_for: str | None = None
     # Момент выдачи ссылки /auth: следующее сообщение считаем кодом.
     oauth_started_at: float | None = None
+    # Одноразовый state выданной ссылки — по нему забираем результат,
+    # если код пришёл на сервер сам (клиент типа Web).
+    oauth_state: str = ""
 
     @property
     def oauth_expired(self) -> bool:
@@ -234,12 +237,13 @@ class TelegramBot:
             return
 
         try:
-            url = google_oauth.authorization_url()
+            url, oauth_state = google_oauth.start(label=f"telegram:{chat_id}")
         except google_oauth.OAuthError as exc:
             self._api.send_message(chat_id, "❌ " + escape(str(exc)))
             return
 
         state.oauth_started_at = time.monotonic()
+        state.oauth_state = oauth_state
         current = google_client.status()
         prefix = (
             f"Google уже подключён ({escape(current.get('account_hint', '') or 'учётная запись определена')}). "
@@ -256,7 +260,7 @@ class TelegramBot:
 
     def _handle_oauth_code(self, chat_id: int, state: ChatState, text: str) -> None:
         if not google_oauth.looks_like_code(text):
-            state.oauth_started_at = None
+            self._clear_oauth(state)
             self._api.send_message(
                 chat_id,
                 "Это не похоже на код авторизации — режим ожидания снят, "
@@ -264,18 +268,33 @@ class TelegramBot:
             )
             return
 
-        state.oauth_started_at = None
+        self._clear_oauth(state)
         try:
             result = google_oauth.exchange_code(text)
         except google_oauth.OAuthError as exc:
             self._api.send_message(chat_id, "❌ " + escape(str(exc)))
             return
 
+        self._report_connected(chat_id, result)
+
+    @staticmethod
+    def _clear_oauth(state: ChatState) -> None:
+        if state.oauth_state:
+            google_oauth.forget(state.oauth_state)
+        state.oauth_started_at = None
+        state.oauth_state = ""
+
+    def _report_connected(self, chat_id: int, result: dict[str, Any]) -> None:
         lines = ["✅ <b>Google подключён</b>"]
         if result.get("account"):
             lines.append(f"Учётная запись: {escape(result['account'])}")
         lines.append(
-            "Токен сохранён " + ("в зашифрованном виде." if result["encrypted"] else "БЕЗ шифрования — задайте OPERON_TOKEN_KEY.")
+            "Токен сохранён "
+            + (
+                "в зашифрованном виде."
+                if result["encrypted"]
+                else "БЕЗ шифрования — задайте OPERON_TOKEN_KEY."
+            )
         )
         lines.append("")
         lines.append("Выданные разрешения:")
@@ -299,7 +318,10 @@ class TelegramBot:
             lines.append(f"Google: подключён {escape(google.get('account_hint', ''))}")
         else:
             lines.append(f"Google: не подключён — {escape(str(google.get('reason', '')))}")
-            lines.append("Подключить: /auth")
+            client = google_oauth.describe_client()
+            lines.append(f"OAuth-клиент: {escape(client['source'])}")
+            if client["configured"]:
+                lines.append("Подключить: /auth")
 
         from ..tools import registry
 
@@ -458,11 +480,23 @@ class TelegramBot:
             if state is None:
                 continue
 
+            # Клиент типа Web возвращает код прямо на сервер: результат
+            # появляется сам, пользователю писать в чат нечего.
+            if state.oauth_state:
+                entry = google_oauth.take_result(state.oauth_state)
+                if entry is not None:
+                    self._clear_oauth(state)
+                    if entry.error:
+                        self._api.send_message(chat_id, "❌ " + escape(entry.error))
+                    elif entry.result is not None:
+                        self._report_connected(chat_id, entry.result)
+                    continue
+
             if state.oauth_expired:
-                state.oauth_started_at = None
+                self._clear_oauth(state)
                 self._api.send_message(
                     chat_id,
-                    f"Код авторизации так и не пришёл за {settings.oauth_wait_minutes} мин — "
+                    f"Ответ Google так и не пришёл за {settings.oauth_wait_minutes} мин — "
                     "ожидание снято. Начните заново: /auth",
                 )
 

@@ -9,16 +9,23 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import auth
 from .agent import agent
 from .config import BASE_DIR, settings
-from .integrations import google_client
+from .integrations import google_client, google_oauth
 from .kb import knowledge_base
 from .sessions import store
+from .telegram.format import escape
 from .tools import registry
 
 logging.basicConfig(
@@ -72,7 +79,70 @@ class LoginRequest(BaseModel):
 
 
 # Пути, доступные без входа: проверка живости, сама страница входа и статика.
-PUBLIC_PATHS = {"/api/health", "/api/login", "/login", "/favicon.ico"}
+# Сюда же адрес возврата OAuth: на него браузер приводит Google, куки нашего
+# приложения там может не быть. Защищает не вход, а одноразовый state —
+# обменять можно только код по ранее выданной ссылке.
+PUBLIC_PATHS = {"/api/health", "/api/login", "/login", "/favicon.ico", "/oauth2/callback"}
+
+
+def _oauth_page(title: str, body: str, ok: bool) -> HTMLResponse:
+    """Страница, которую увидит пользователь после согласия Google."""
+    colour = "#0f766e" if ok else "#b91c1c"
+    return HTMLResponse(
+        f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(title)}</title></head>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+background:#f8fafc;color:#0f172a;display:flex;min-height:100vh;
+align-items:center;justify-content:center;margin:0;padding:24px">
+<main style="max-width:520px;background:#fff;border-radius:14px;padding:32px;
+box-shadow:0 1px 3px rgba(0,0,0,.1)">
+<h1 style="margin:0 0 12px;font-size:20px;color:{colour}">{escape(title)}</h1>
+<p style="margin:0;line-height:1.6;white-space:pre-wrap">{escape(body)}</p>
+</main></body></html>""",
+        status_code=200 if ok else 400,
+    )
+
+
+@app.get("/oauth2/callback")
+def oauth_callback(code: str = "", state: str = "", error: str = "") -> HTMLResponse:
+    """Принимает ответ Google и сохраняет токен — без копирования кода вручную."""
+    if error:
+        google_oauth.forget(state)
+        return _oauth_page(
+            "Доступ не выдан",
+            f"Google вернул: {error}. Вернитесь в бот и повторите /auth.",
+            ok=False,
+        )
+    if not code:
+        return _oauth_page(
+            "Кода нет",
+            "Google не передал код авторизации. Повторите /auth в боте.",
+            ok=False,
+        )
+
+    try:
+        result = google_oauth.handle_callback(code, state)
+    except google_oauth.OAuthError as exc:
+        return _oauth_page("Не удалось подключить Google", str(exc), ok=False)
+
+    account = result.get("account") or "учётная запись определена"
+    missing = result.get("missing_scopes") or []
+    tail = (
+        "\n\nВНИМАНИЕ: часть разрешений не выдана — "
+        + ", ".join(missing)
+        + ". Часть функций не заработает."
+        if missing
+        else ""
+    )
+    return _oauth_page(
+        "Google подключён",
+        f"Доступ выдан: {account}.\nТокен сохранён на сервере"
+        + (" в зашифрованном виде." if result.get("encrypted") else " БЕЗ шифрования.")
+        + "\n\nМожно закрыть вкладку и вернуться в бот."
+        + tail,
+        ok=True,
+    )
 
 
 def _sse(events: Iterator[dict[str, Any]]) -> Iterator[str]:
@@ -220,6 +290,7 @@ def status() -> dict[str, Any]:
         "timezone": settings.timezone_name,
         "knowledge_base": kb,
         "google": google,
+        "google_oauth": google_oauth.describe_client(),
         "web_search": settings.web_search_enabled,
         "telegram": telegram.status(),
         "confirmation_ttl_minutes": settings.confirmation_ttl_minutes,

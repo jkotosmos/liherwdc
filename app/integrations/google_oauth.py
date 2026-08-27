@@ -1,13 +1,21 @@
-"""Авторизация Google без доступа к серверу: ссылка → код → токен.
+"""Авторизация Google без доступа к серверу: ссылка → согласие → токен.
 
 Обычный сценарий google-auth поднимает локальный веб-сервер и открывает
 браузер. На Amvera так нельзя: браузера в контейнере нет, а токен, полученный
 на рабочем ноутбуке, пришлось бы переносить файлами при каждой переавторизации.
 
-Здесь используется тот же OAuth-клиент типа Desktop, но redirect_uri остаётся
-непрослушанным: после подтверждения браузер пытается открыть localhost, видит
-ошибку соединения — и показывает код в адресной строке. Пользователь копирует
-адрес целиком и отдаёт боту, обмен на токен происходит на сервере.
+Поддерживаются оба типа OAuth-клиента, и различие между ними существенное:
+
+* **Web application** — код возвращается на публичный адрес приложения
+  (``/oauth2/callback``). Пользователь просто нажимает «Разрешить» и всё;
+  копировать ничего не нужно. Адрес обязан быть заранее зарегистрирован в
+  Google Cloud Console, иначе Google ответит ``redirect_uri_mismatch``.
+* **Desktop** — redirect_uri остаётся непрослушанным localhost: браузер
+  показывает ошибку соединения, а код виден в адресной строке. Пользователь
+  копирует адрес целиком и отдаёт боту.
+
+Ответ Google привязывается к одноразовому ``state``: обменять можно только код,
+пришедший на ранее выданную ссылку.
 """
 
 from __future__ import annotations
@@ -16,6 +24,10 @@ import json
 import logging
 import os
 import re
+import secrets
+import threading
+import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -34,14 +46,72 @@ class OAuthError(Exception):
     """Ошибка, текст которой можно показать пользователю целиком."""
 
 
+@dataclass
+class _Pending:
+    """Выданная ссылка авторизации, ждущая ответа Google."""
+
+    created_at: float
+    label: str
+    done: bool = False
+    result: dict[str, Any] | None = None
+    error: str = ""
+
+
+# state -> выданная ссылка. Обменять можно только код с известным state:
+# случайный запрос на /oauth2/callback ничего не подключит.
+_pending: dict[str, _Pending] = {}
+_lock = threading.Lock()
+
+
+def _forget_stale() -> None:
+    limit = max(settings.oauth_wait_minutes, 1) * 60
+    now = time.monotonic()
+    for state, entry in list(_pending.items()):
+        # Завершённые держим чуть дольше: бот должен успеть их забрать.
+        age_limit = limit if not entry.done else limit + 300
+        if now - entry.created_at > age_limit:
+            _pending.pop(state, None)
+
+
+def _config_from_env() -> dict[str, Any] | None:
+    """Собирает конфигурацию клиента из GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
+
+    На Amvera это удобнее файла: переменные задаются в панели, на постоянный
+    диск ничего загружать не нужно. Секция выбирается по адресу возврата —
+    «web» для клиента с зарегистрированным адресом, «installed» для Desktop.
+    """
+    client_id = settings.google_client_id
+    client_secret = settings.google_client_secret_value
+    if not client_id or not client_secret:
+        return None
+
+    section = "web" if settings.oauth_callback_enabled else "installed"
+    return {
+        section: {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": [settings.oauth_redirect_uri],
+        }
+    }
+
+
 def _client_config() -> dict[str, Any]:
+    from_env = _config_from_env()
+    if from_env is not None:
+        return from_env
+
     path = settings.google_client_secret_path
     if not path.exists():
         raise OAuthError(
-            f"Не найден файл OAuth-клиента: {path}\n\n"
-            "Как получить: console.cloud.google.com → APIs & Services → Credentials → "
-            "Create credentials → OAuth client ID → тип «Desktop app». Скачанный JSON "
-            "положите по этому пути (на сервере — на постоянный диск)."
+            "OAuth-клиент Google не настроен. Есть два способа:\n\n"
+            "1) переменные окружения GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET "
+            "(проще всего на сервере);\n"
+            f"2) файл {path}.\n\n"
+            "Где взять: console.cloud.google.com → APIs & Services → Credentials → "
+            "Create credentials → OAuth client ID."
         )
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
@@ -54,15 +124,17 @@ def _client_config() -> dict[str, Any]:
             "Скачайте JSON именно из раздела Credentials → OAuth 2.0 Client IDs."
         )
     if "web" in config and "installed" not in config:
-        # Для клиента типа Web адрес возврата должен быть заранее прописан в консоли.
+        # Для клиента типа Web адрес возврата должен быть заранее прописан в
+        # консоли. Список из скачанного файла — единственное, что можно
+        # проверить локально; Google проверит по-настоящему.
         registered = config["web"].get("redirect_uris") or []
-        if settings.oauth_redirect_uri not in registered:
+        if registered and settings.oauth_redirect_uri not in registered:
             raise OAuthError(
                 "OAuth-клиент имеет тип «Web application», а его список Authorized "
-                f"redirect URIs не содержит {settings.oauth_redirect_uri}. Либо добавьте "
-                "этот адрес в Google Cloud Console, либо задайте OPERON_OAUTH_REDIRECT_URI "
-                "равным одному из уже разрешённых, либо создайте клиент типа «Desktop app» "
-                "(для него подходит любой localhost)."
+                f"redirect URIs не содержит {settings.oauth_redirect_uri}. Добавьте "
+                "этот адрес в Google Cloud Console (Credentials → ваш клиент → "
+                "Authorized redirect URIs) либо задайте OPERON_OAUTH_REDIRECT_URI "
+                "равным одному из уже разрешённых."
             )
     return config
 
@@ -90,18 +162,72 @@ def _flow() -> Any:
         raise OAuthError(f"Файл OAuth-клиента не подходит для авторизации: {exc}") from exc
 
 
-def authorization_url() -> str:
-    """Ссылка, по которой пользователь выдаёт доступ."""
+def start(label: str = "") -> tuple[str, str]:
+    """Выдаёт ссылку авторизации и одноразовый state. Возвращает (url, state)."""
     flow = _flow()
-    url, _state = flow.authorization_url(
+    state = secrets.token_urlsafe(24)
+    url, _ = flow.authorization_url(
         # Без access_type=offline Google не выдаст refresh_token, и через час
         # агент потеряет доступ до следующей ручной авторизации.
         access_type="offline",
         # Повторная авторизация без prompt=consent возвращается без refresh_token.
         prompt="consent",
         include_granted_scopes="true",
+        state=state,
     )
-    return url
+    with _lock:
+        _forget_stale()
+        _pending[state] = _Pending(created_at=time.monotonic(), label=label)
+    return url, state
+
+
+def authorization_url() -> str:
+    """Ссылка без отслеживания state — для ручных сценариев и диагностики."""
+    return start()[0]
+
+
+def take_result(state: str) -> _Pending | None:
+    """Забирает результат, пришедший на /oauth2/callback, — один раз."""
+    with _lock:
+        entry = _pending.get(state)
+        if entry is None or not entry.done:
+            return None
+        return _pending.pop(state)
+
+
+def forget(state: str) -> None:
+    with _lock:
+        _pending.pop(state, None)
+
+
+def handle_callback(code: str, state: str) -> dict[str, Any]:
+    """Обрабатывает ответ Google на /oauth2/callback.
+
+    Обменять можно только код с известным state: адрес возврата публичен, и
+    без этой проверки любой запрос к нему пытался бы что-то подключить.
+    """
+    with _lock:
+        _forget_stale()
+        entry = _pending.get(state or "")
+    if entry is None:
+        raise OAuthError(
+            "Ссылка авторизации неизвестна или устарела. Запросите новую: /auth в боте."
+        )
+    if entry.done:
+        raise OAuthError("Эта ссылка уже использована. Если нужно заново — /auth.")
+
+    try:
+        result = exchange_code(code)
+    except OAuthError as exc:
+        with _lock:
+            entry.done = True
+            entry.error = str(exc)
+        raise
+
+    with _lock:
+        entry.done = True
+        entry.result = result
+    return result
 
 
 def looks_like_code(text: str) -> bool:
@@ -221,6 +347,14 @@ def _describe_exchange_error(exc: Exception) -> str:
 
 def instructions() -> str:
     """Текст, который бот показывает вместе со ссылкой (без разметки)."""
+    if settings.oauth_callback_enabled:
+        return (
+            "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
+            "с документами которой должен работать ассистент.\n"
+            "2. Всё. Код придёт на сервер сам, копировать ничего не нужно — "
+            "я напишу, когда токен сохранится.\n\n"
+            f"Жду ответа {settings.oauth_wait_minutes} мин."
+        )
     return (
         "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
         "с документами которой должен работать ассистент.\n"
@@ -231,3 +365,18 @@ def instructions() -> str:
         "следующим сообщением.\n\n"
         f"Ссылка действует ограниченное время, жду код {settings.oauth_wait_minutes} мин."
     )
+
+
+def describe_client() -> dict[str, Any]:
+    """Как настроен OAuth-клиент — для /status и диагностики."""
+    source = ""
+    if _config_from_env() is not None:
+        source = "переменные окружения"
+    elif settings.google_client_secret_path.exists():
+        source = f"файл {settings.google_client_secret_path.name}"
+    return {
+        "configured": bool(source),
+        "source": source or "не настроен",
+        "redirect_uri": settings.oauth_redirect_uri,
+        "callback_mode": settings.oauth_callback_enabled,
+    }
