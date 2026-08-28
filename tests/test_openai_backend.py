@@ -10,6 +10,7 @@ import json
 from dataclasses import replace
 
 import httpx
+from types import SimpleNamespace
 import pytest
 
 from app import llm
@@ -244,3 +245,66 @@ class TestErrors:
         monkeypatch.setattr(llm, "settings", replace(settings, base_url="", api_key="k"))
         with pytest.raises(llm.LLMError, match="OPERON_LLM_BASE_URL"):
             OpenAICompatBackend()
+
+
+class TestGatewayLimits:
+    """Каталог стороннего шлюза заранее неизвестен: потолок ответа у каждой модели свой."""
+
+    def _agent_rejecting_max_tokens(self, monkeypatch, message: str):
+        import anthropic
+
+        from app.agent import OperonAgent, Session
+
+        agent = OperonAgent()
+        attempts: list[int] = []
+
+        class DoneStream:
+            """Минимальный успешный ответ: ходу достаточно, чтобы завершиться."""
+
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def __iter__(self): return iter(())
+
+            @staticmethod
+            def get_final_message():
+                return SimpleNamespace(content=[], stop_reason="end_turn", usage=None)
+
+        class Backend:
+            def stream(self, **params):
+                attempts.append(params["max_tokens"])
+                if len(attempts) == 1:
+                    raise anthropic.BadRequestError(
+                        message=message,
+                        response=httpx.Response(400, request=httpx.Request("POST", "https://x")),
+                        body=None,
+                    )
+                return DoneStream()
+
+        agent._client = Backend()
+        monkeypatch.setattr(agent, "_runtime_context", lambda: "к")
+        return agent, attempts, Session(session_id="s")
+
+    def test_too_large_max_tokens_is_reduced_and_retried(self, monkeypatch) -> None:
+        agent, attempts, session = self._agent_rejecting_max_tokens(
+            monkeypatch, "max_tokens must be less than or equal to 8192"
+        )
+        list(agent.send_user_message(session, "привет"))
+
+        assert len(attempts) == 2, "запрос должен быть повторён"
+        assert attempts[1] < attempts[0], "со сниженным лимитом"
+        assert attempts[1] >= 1024, "но не до бессмысленно малого"
+
+    def test_unrelated_error_is_not_retried_as_a_limit(self, monkeypatch) -> None:
+        agent, attempts, session = self._agent_rejecting_max_tokens(
+            monkeypatch, "model not found"
+        )
+        events = list(agent.send_user_message(session, "привет"))
+        assert len(attempts) == 1, "чужая ошибка не должна трактоваться как лимит"
+        assert any(e["type"] == "error" for e in events)
+
+    def test_reduced_cap_is_remembered(self, monkeypatch) -> None:
+        agent, attempts, session = self._agent_rejecting_max_tokens(
+            monkeypatch, "max_tokens is too large for this model"
+        )
+        list(agent.send_user_message(session, "привет"))
+        assert agent._max_tokens_cap == attempts[1], "чтобы не упираться в тот же отказ каждый ход"

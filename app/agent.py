@@ -124,6 +124,9 @@ class OperonAgent:
         self._supports_system_messages = True
         # Параметры, которые шлюз отверг: повторяем запрос уже без них.
         self._unsupported_params: set[str] = set()
+        # Потолок ответа, если шлюз сказал, что запрошенный слишком велик.
+        # У каждой модели он свой, а каталог стороннего шлюза заранее неизвестен.
+        self._max_tokens_cap: int | None = None
 
     # --- клиент -------------------------------------------------------------
 
@@ -192,7 +195,7 @@ class OperonAgent:
     def _request_params(self, session: Session) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": settings.model,
-            "max_tokens": settings.max_tokens,
+            "max_tokens": self._max_tokens_cap or settings.max_tokens,
             "system": self._system(),
             "messages": self._api_messages(session),
             "tools": self._tools(),
@@ -517,6 +520,25 @@ class OperonAgent:
         и повторяем ход — один раз на каждый параметр.
         """
         message = str(exc).lower()
+
+        # Лимит ответа больше, чем позволяет модель. Встречается при смене
+        # модели на шлюзе: у каждой свой потолок, и узнать его заранее нельзя.
+        if ("max_tokens" in message or "max output" in message or "max_completion" in message) and (
+            "less than" in message
+            or "too large" in message
+            or "maximum" in message
+            or "exceed" in message
+            or "not supported" in message
+            or "больше" in message
+        ):
+            current = self._max_tokens_cap or settings.max_tokens
+            reduced = max(current // 2, 1024)
+            if reduced < current:
+                logger.warning(
+                    "Шлюз не принял max_tokens=%s — повторяю с %s", current, reduced
+                )
+                self._max_tokens_cap = reduced
+                return True
 
         if self._supports_system_messages and "system" in message and (
             "role" in message or "not supported" in message or "unsupported" in message

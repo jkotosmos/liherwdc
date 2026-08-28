@@ -131,7 +131,13 @@ class OpenAICompatBackend:
             **settings.extra_headers,
         }
         # client передаётся в тестах, чтобы подставить транспорт-заглушку.
-        self._client = client or httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT)
+        # Заголовки ставим в обоих случаях: иначе проверка с заглушкой шла бы
+        # без авторизации и не отражала настоящий запрос.
+        if client is None:
+            self._client = httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT)
+        else:
+            self._client = client
+            self._client.headers.update(headers)
 
     # --- преобразование запроса ---
 
