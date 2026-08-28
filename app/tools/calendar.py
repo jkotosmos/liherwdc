@@ -61,6 +61,27 @@ def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
     }
 
 
+def list_events_between(day_from: date, day_to: date, calendar_id: str = "primary") -> list[dict[str, Any]]:
+    """События за период — для утренней сводки, без участия модели."""
+    start = datetime.combine(day_from, time.min).replace(tzinfo=settings.tz)
+    end = datetime.combine(day_to, time.max).replace(tzinfo=settings.tz)
+    events = (
+        _calendar()
+        .events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=50,
+        )
+        .execute()
+        .get("items", [])
+    )
+    return [_event_view(e, calendar_id) for e in events]
+
+
 def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
     calendar_id = (tool_input.get("calendar_id") or "primary").strip()
     now = datetime.now(settings.tz)

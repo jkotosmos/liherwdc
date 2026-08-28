@@ -219,6 +219,10 @@ python -m app.integrations.google_auth
 | `calendar_update_event` | Перенос и изменение события | **да** |
 | `calendar_delete_event` | Удаление события | **да** |
 | `tasks_list` | Реестр поручений, просрочки | — |
+| `kpi_list` | Показатели: план, факт, статус отклонения по порогам | — |
+| `kpi_upsert` | Завести показатель или записать факт | **да** |
+| `protocol_list` | Протоколы встреч: договорённости, решения | — |
+| `protocol_save` | Сохранить протокол и поставить поручения из него | **да** |
 | `task_create` | Фиксация поручения | **да** |
 | `task_update` | Смена статуса, срока, ответственного | **да** |
 | `internet_search` | Поиск в интернете (Tavily / Brave / Serper / Google CSE) | — |
@@ -243,12 +247,15 @@ python -m app.integrations.google_auth
 | `TAVILY_API_KEY` и др. | — | Ключ поиска для работы с интернетом через сторонний шлюз |
 | `OPERON_GOOGLE_SCOPES` | `drive.readonly` + `drive.file` + `calendar.events` | Права доступа к Google. Смена набора требует повторного `/auth` |
 | `OPERON_CONFIRMATION_TTL_MINUTES` | `30` | Сколько ждать ответа на подтверждение; без ответа действие отменяется. `0` — не ограничивать |
+| `OPERON_DIGEST_HOUR` | `9` | Час утренней сводки о просрочках и встречах |
+| `OPERON_QUIET_HOURS` | `22-8` | Часы, когда бот молчит |
+| `OPERON_REMINDERS` | `true` | Напоминания целиком |
 | `TELEGRAM_ALLOWED_USERS` | — | Белый список Telegram ID. Без него бот не запускается |
 
 ## Разработка
 
 ```bash
-python -m pytest tests/ -q      # 237 тестов, ~3 с
+python -m pytest tests/ -q      # 313 тестов, ~3 с
 python run.py --reload          # автоперезапуск
 ```
 

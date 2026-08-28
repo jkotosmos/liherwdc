@@ -135,6 +135,12 @@ class Settings:
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_poll_timeout: int = _int("TELEGRAM_POLL_TIMEOUT", 30)
 
+    # --- Напоминания ---
+    # Бот пишет сам: без этого пункт ТЗ про напоминания закрыть нечем —
+    # инструмент срабатывает только в ответ на реплику пользователя.
+    digest_hour: int = _int("OPERON_DIGEST_HOUR", 9)
+    remind_before_days: int = _int("OPERON_REMIND_BEFORE_DAYS", 2)
+
     # --- Ограничения ---
     max_history_messages: int = _int("OPERON_MAX_HISTORY", 200)
     session_ttl_minutes: int = _int("OPERON_SESSION_TTL_MINUTES", 720)
@@ -345,8 +351,58 @@ class Settings:
         return self.credentials_dir / "client_secret.json"
 
     @property
+    def reminders_enabled(self) -> bool:
+        return _bool("OPERON_REMINDERS", True)
+
+    @property
+    def digest_weekdays(self) -> frozenset[int]:
+        """Дни недели для сводки, ISO: 1 — понедельник, 7 — воскресенье.
+
+        По умолчанию рабочая неделя: сводка о просроченных поручениях в
+        воскресенье утром никому не нужна.
+        """
+        raw = (os.getenv("OPERON_DIGEST_WEEKDAYS") or "1-5").strip()
+        days: set[int] = set()
+        for part in raw.replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                start, _, end = part.partition("-")
+                if start.strip().isdigit() and end.strip().isdigit():
+                    days.update(range(int(start), int(end) + 1))
+            elif part.isdigit():
+                days.add(int(part))
+        return frozenset(d for d in days if 1 <= d <= 7) or frozenset({1, 2, 3, 4, 5})
+
+    @property
+    def quiet_hours(self) -> tuple[int, int]:
+        """Часы тишины «начало-конец», например 22-8. Равные значения — тишины нет."""
+        raw = (os.getenv("OPERON_QUIET_HOURS") or "22-8").strip()
+        start, _, end = raw.partition("-")
+        try:
+            first, second = int(start), int(end)
+        except ValueError:
+            return (22, 8)
+        if not (0 <= first <= 23 and 0 <= second <= 23):
+            return (22, 8)
+        return (first, second)
+
+    @property
     def tasks_path(self) -> Path:
         return self.data_dir / "tasks.json"
+
+    @property
+    def reminders_path(self) -> Path:
+        return self.data_dir / "reminders.json"
+
+    @property
+    def kpi_path(self) -> Path:
+        return self.data_dir / "kpi.json"
+
+    @property
+    def protocols_path(self) -> Path:
+        return self.data_dir / "protocols.json"
 
     @property
     def sessions_path(self) -> Path:

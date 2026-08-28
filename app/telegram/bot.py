@@ -23,6 +23,7 @@ from ..config import settings
 from ..integrations import google_client, google_oauth
 from ..kb import knowledge_base
 from ..sessions import store
+from .. import reminders
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
 
@@ -134,6 +135,11 @@ class TelegramBot:
                 self.sweep_expired()
             except Exception:  # noqa: BLE001
                 logger.exception("Сбой при снятии просроченных подтверждений")
+
+            try:
+                self.send_reminders()
+            except Exception:  # noqa: BLE001 — напоминание не должно ронять бота
+                logger.exception("Сбой при отправке напоминаний")
 
         logger.info("Telegram-бот остановлен")
 
@@ -327,6 +333,16 @@ class TelegramBot:
 
         has_search = "internet_search" in registry.names()
         lines.append("Интернет: " + ("доступен" if has_search or settings.web_search_enabled else "нет ключа поиска"))
+
+        rem = reminders.describe()
+        if rem["enabled"]:
+            lines.append(
+                f"Напоминания: сводка в {rem['digest_hour']}:00, "
+                f"предупреждение за {rem['remind_before_days']} дн., "
+                f"тишина {rem['quiet_hours']}"
+            )
+        else:
+            lines.append("Напоминания: выключены")
         return "\n".join(lines)
 
     # --- ход агента ---
@@ -520,6 +536,40 @@ class TelegramBot:
             state.awaiting_comment_for = None
             logger.info("Чат %s: подтверждение просрочено, действия отменены", chat_id)
             self._run_turn(chat_id, self._agent.expire_pending(session, decisions, comments))
+
+    def send_reminders(self) -> None:
+        """Отправляет то, что бот должен сказать сам, без вопроса пользователя.
+
+        Получателями считаем весь белый список: он и задуман как «те, кому
+        этот ассистент принадлежит». Отправленное помечается только после
+        успешной отправки — иначе сбой связи проглотил бы напоминание молча.
+        """
+        plan = reminders.pending()
+        if not plan:
+            return
+
+        delivered: list[reminders.Reminder] = []
+        for reminder in plan:
+            if not reminder.text:
+                # Пустая сводка: отмечаем как обработанную, но не пишем.
+                # Ежедневное «всё в порядке» перестают читать.
+                delivered.append(reminder)
+                continue
+            sent_to_someone = False
+            for user_id in sorted(self._allowed):
+                try:
+                    for chunk in split_message(reminder.text):
+                        self._api.send_message(user_id, chunk)
+                    sent_to_someone = True
+                except TelegramError as exc:
+                    # Обычная причина — пользователь не открывал диалог с ботом.
+                    logger.warning("Напоминание не доставлено %s: %s", user_id, exc)
+            if sent_to_someone:
+                delivered.append(reminder)
+
+        if delivered:
+            reminders.mark_sent(delivered)
+            logger.info("Напоминаний отправлено: %s", sum(1 for r in delivered if r.text))
 
     def _maybe_resume(self, chat_id: int) -> None:
         """Продолжает ход, когда решения приняты по всем карточкам."""

@@ -552,3 +552,69 @@ class TestAuthViaCallback:
 
         assert len(api.texts()) == before, "пока Google молчит, боту сказать нечего"
         assert bot._states[1].oauth_state == "st-web"
+
+
+class TestProactiveReminders:
+    """Единственное место, где бот говорит первым."""
+
+    def _bot(self, monkeypatch):
+        return make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
+
+    def test_reminder_goes_to_the_whitelist(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        from app.reminders import Reminder
+
+        monkeypatch.setattr(
+            bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="<b>Сводка</b>")]
+        )
+        marked: list = []
+        monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
+
+        bot.send_reminders()
+
+        assert any("Сводка" in t for t in api.texts())
+        assert [p["chat_id"] for m, p in api.calls if m == "send_message"] == [ALLOWED]
+        assert marked, "отправленное должно помечаться, иначе придёт снова"
+
+    def test_empty_reminder_is_marked_but_not_sent(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        from app.reminders import Reminder
+
+        monkeypatch.setattr(bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="")])
+        marked: list = []
+        monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
+
+        bot.send_reminders()
+
+        assert api.texts() == [], "молчать — значит не писать вообще"
+        assert marked, "но пометить надо, иначе будем пересобирать каждые полминуты"
+
+    def test_failed_delivery_is_not_marked_as_sent(self, monkeypatch) -> None:
+        """Иначе сбой связи проглотил бы напоминание навсегда."""
+        bot, api = self._bot(monkeypatch)
+        from app.reminders import Reminder
+
+        monkeypatch.setattr(
+            bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="Сводка")]
+        )
+        marked: list = []
+        monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
+
+        def refuse(*args, **kwargs):
+            raise TelegramError("bot was blocked by the user")
+
+        monkeypatch.setattr(api, "send_message", refuse)
+
+        bot.send_reminders()
+        assert marked == [], "недоставленное помечать нельзя"
+
+    def test_nothing_pending_means_no_calls(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module.reminders, "pending", lambda: [])
+        bot.send_reminders()
+        assert api.calls == []
+
+    def test_status_shows_the_schedule(self, monkeypatch) -> None:
+        bot, api = self._bot(monkeypatch)
+        bot._handle_update(message("/status"))
+        assert "Напоминания" in api.texts()[0]

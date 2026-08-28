@@ -37,6 +37,8 @@ class TestRegistry:
             "drive_create_file",
             "task_create",
             "task_update",
+            "kpi_upsert",
+            "protocol_save",
         }
 
     def test_read_tools_are_not_gated(self) -> None:

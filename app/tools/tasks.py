@@ -56,6 +56,19 @@ def _decorate(task: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+def load_active() -> list[dict[str, Any]]:
+    """Незакрытые поручения с посчитанной просрочкой — для планировщика.
+
+    Отдельно от инструмента: напоминания собираются без модели, им нужны
+    данные, а не текст для неё.
+    """
+    return [
+        _decorate(task)
+        for task in _load()
+        if task.get("status") not in {"done", "cancelled"}
+    ]
+
+
 def _tasks_list(tool_input: dict[str, Any]) -> Any:
     tasks = _load()
     if not tasks:
