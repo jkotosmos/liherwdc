@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import math
 import re
 import threading
@@ -18,9 +19,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .documents import DOCUMENT_SUFFIXES, DocumentError, extract_from_path
 from .text import tokenize
 
-SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml"}
+logger = logging.getLogger(__name__)
+
+TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml"}
+# Офисные форматы разбираются отдельно: реальные договоры и регламенты лежат
+# в .docx и .pdf, а не в markdown.
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES
 
 # Каталоги, которые не индексируются: шаблоны — это пустые формы,
 # и агент не должен принимать их за фактические данные.
@@ -116,8 +123,18 @@ def _csv_to_text(raw: str, delimiter: str) -> str:
 
 
 def _load_raw(path: Path) -> str:
-    raw = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.lower()
+
+    if suffix in DOCUMENT_SUFFIXES:
+        # Битый документ не должен ронять индексацию всей базы: пропускаем
+        # его с записью в лог, остальные документы остаются доступны.
+        try:
+            return extract_from_path(path)
+        except DocumentError as exc:
+            logger.warning("Документ %s пропущен: %s", path.name, exc)
+            return ""
+
+    raw = path.read_text(encoding="utf-8", errors="replace")
     if suffix == ".csv":
         return _csv_to_text(raw, ",")
     if suffix == ".tsv":

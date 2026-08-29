@@ -5,8 +5,15 @@ from __future__ import annotations
 import difflib
 import io
 import re
+from pathlib import Path
 from typing import Any
 
+from ..kb.documents import (
+    DOCUMENT_SUFFIXES,
+    DocumentError,
+    extract_text,
+    legacy_alternative,
+)
 from ..integrations.google_client import (
     HttpError,
     authorized_session,
@@ -23,6 +30,16 @@ EXPORT_AS_TEXT = {
     GOOGLE_DOC: "text/plain",
     GOOGLE_SLIDES: "text/plain",
     GOOGLE_SHEET: "text/csv",
+}
+
+# Файлы, загруженные на Диск в исходном формате: Google их не экспортирует,
+# скачиваем и разбираем сами.
+OFFICE_MIME_SUFFIX = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.ms-excel.sheet.macroEnabled.12": ".xlsm",
 }
 
 READABLE_BINARY_PREFIXES = ("text/", "application/json", "application/xml")
@@ -136,16 +153,35 @@ def _read_spreadsheet(file_id: str, sheet_range: str | None) -> str:
     return "\n\n".join(blocks)
 
 
-def _export_text(file_id: str, mime_type: str) -> str:
+def _export_text(file_id: str, mime_type: str, name: str = "") -> str:
     drive = _drive()
     if mime_type in EXPORT_AS_TEXT:
         data = drive.files().export(fileId=file_id, mimeType=EXPORT_AS_TEXT[mime_type]).execute()
         return data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+
+    # Офисные файлы, загруженные на Диск как есть: скачиваем и разбираем сами.
+    # Раньше на них отвечали отказом, и договоры в .docx агент не видел.
+    suffix = OFFICE_MIME_SUFFIX.get(mime_type) or Path(name or "").suffix.lower()
+    if suffix in DOCUMENT_SUFFIXES:
+        data = drive.files().get_media(fileId=file_id, supportsAllDrives=True).execute()
+        try:
+            return extract_text(data, f"file{suffix}")
+        except DocumentError as exc:
+            raise ToolError(str(exc)) from exc
+
     if mime_type.startswith(READABLE_BINARY_PREFIXES):
         data = drive.files().get_media(fileId=file_id, supportsAllDrives=True).execute()
         return data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+
+    alternative = legacy_alternative(name or "")
+    if alternative:
+        raise ToolError(
+            f"Файл «{name}» — устаревший бинарный формат Office, прочитать его нельзя. "
+            f"Попроси пользователя пересохранить его как {alternative} или открыть "
+            "в Google Docs."
+        )
     raise ToolError(
-        f"Файл имеет тип {mime_type}, текст из него извлечь нельзя (например, PDF, изображение "
+        f"Файл имеет тип {mime_type}, текст из него извлечь нельзя (например, изображение "
         "или архив). Сообщи пользователю тип файла и предложи прислать текстовую версию или "
         "экспортировать документ в Google Docs."
     )

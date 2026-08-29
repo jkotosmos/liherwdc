@@ -5,6 +5,14 @@ uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 python-dotenv>=1.0.1
 
+# --- Разбор офисных документов ---
+# Договоры, регламенты и тарифы лежат в .docx и .pdf, а не в markdown.
+# Разбор идёт в процессе, без внешних сервисов.
+pypdf>=6.0
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=1.0
+
 # --- Интеграции Google (опционально: без них агент работает,
 #     но инструменты Drive/Calendar сообщают о недоступности) ---
 google-api-python-client>=2.150.0
