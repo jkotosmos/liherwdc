@@ -315,6 +315,17 @@ class Settings:
         return (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
 
     @property
+    def google_client_type(self) -> str:
+        """Тип OAuth-клиента: «desktop», «web» или пусто (определить по адресу).
+
+        Это не косметика: у Desktop-клиента адрес возврата — непрослушанный
+        localhost, у Web — заранее зарегистрированный публичный адрес. Перепутать
+        их значит получить redirect_uri_mismatch уже после нажатия ссылки, когда
+        причина совсем не очевидна.
+        """
+        return (os.getenv("OPERON_GOOGLE_CLIENT_TYPE") or "").strip().lower()
+
+    @property
     def oauth_callback_path(self) -> str:
         return "/oauth2/callback"
 
@@ -334,6 +345,10 @@ class Settings:
         explicit = (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "").strip()
         if explicit:
             return explicit
+        # Тип клиента важнее наличия публичного адреса: Desktop-клиент
+        # зарегистрированный https-адрес попросту не примет.
+        if self.google_client_type == "desktop":
+            return "http://localhost:8765/"
         if self.public_url:
             return self.public_url + self.oauth_callback_path
         return "http://localhost:8765/"

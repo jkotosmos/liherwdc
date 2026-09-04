@@ -234,3 +234,64 @@ class TestStateGate:
 
         entry = google_oauth.take_result(state)
         assert entry is not None and "invalid_grant" in entry.error
+
+
+class TestClientType:
+    """Перепутанный тип клиента даёт redirect_uri_mismatch уже после клика.
+
+    Причина в этот момент совсем не очевидна, поэтому тип задаётся явно и
+    важнее наличия публичного адреса.
+    """
+
+    @pytest.fixture(autouse=True)
+    def env_client(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "1-test.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "GOCSPX-test")
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_SECRET", str(tmp_path / "нет.json"))
+        monkeypatch.delenv("OPERON_OAUTH_REDIRECT_URI", raising=False)
+
+    def _settings(self, monkeypatch, **kw):
+        from app.config import Settings
+
+        conf = Settings(**kw)
+        monkeypatch.setattr("app.integrations.google_oauth.settings", conf)
+        return conf
+
+    def test_desktop_ignores_the_public_url(self, monkeypatch) -> None:
+        """Desktop-клиент зарегистрированный https-адрес не примет."""
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_TYPE", "desktop")
+        conf = self._settings(monkeypatch, public_url="https://operon.amvera.io")
+
+        assert conf.oauth_redirect_uri == "http://localhost:8765/"
+        assert conf.oauth_callback_enabled is False
+        assert "installed" in google_oauth._config_from_env()
+
+    def test_web_uses_the_callback(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_TYPE", "web")
+        conf = self._settings(monkeypatch, public_url="https://operon.amvera.io")
+
+        assert conf.oauth_redirect_uri.endswith("/oauth2/callback")
+        assert conf.oauth_callback_enabled is True
+        assert "web" in google_oauth._config_from_env()
+
+    def test_without_type_the_public_url_decides(self, monkeypatch) -> None:
+        monkeypatch.delenv("OPERON_GOOGLE_CLIENT_TYPE", raising=False)
+        conf = self._settings(monkeypatch, public_url="https://operon.amvera.io")
+        assert conf.oauth_callback_enabled is True
+
+        bare = self._settings(monkeypatch, public_url="")
+        assert bare.oauth_redirect_uri == "http://localhost:8765/"
+
+    def test_explicit_redirect_beats_everything(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_TYPE", "desktop")
+        monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "http://127.0.0.1:9999/")
+        conf = self._settings(monkeypatch, public_url="https://operon.amvera.io")
+        assert conf.oauth_redirect_uri == "http://127.0.0.1:9999/"
+
+    def test_desktop_instructions_explain_the_paste(self, monkeypatch) -> None:
+        """В режиме localhost пользователь обязан знать, что делать с адресом."""
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_TYPE", "desktop")
+        self._settings(monkeypatch, public_url="https://operon.amvera.io")
+        text = google_oauth.instructions()
+        assert "ошибку соединения" in text
+        assert "пришлите его сюда" in text
