@@ -159,3 +159,65 @@ class TestKnowledgeBaseCheck:
         assert checks[0].status in (OK, WARN)
         if checks[0].status == WARN:
             assert "не поломка" in " ".join(checks[0].hints)
+
+
+class TestGoogleRedirectAdvice:
+    """Совет чинить то, что уже верно, — худший вид отчёта о проверке."""
+
+    @staticmethod
+    def _client(monkeypatch, *, callback_mode: bool, declared: str, redirect: str):
+        from dataclasses import replace as _replace
+
+        from app.integrations import google_client, google_oauth
+
+        monkeypatch.setattr(
+            google_oauth,
+            "describe_client",
+            lambda: {
+                "configured": True,
+                "source": "переменные окружения",
+                "redirect_uri": redirect,
+                "callback_mode": callback_mode,
+            },
+        )
+        monkeypatch.setattr(google_client, "status", lambda: {"connected": False, "reason": "нет токена"})
+        monkeypatch.setenv("OPERON_GOOGLE_CLIENT_TYPE", declared)
+        monkeypatch.setattr(selfcheck, "settings", _replace(settings))
+
+    def test_loopback_is_correct_for_a_desktop_client(self, monkeypatch) -> None:
+        """Раньше здесь стояло ВНИМАНИЕ с советом перейти на публичный адрес."""
+        self._client(
+            monkeypatch, callback_mode=False, declared="desktop",
+            redirect="http://localhost:8765/",
+        )
+        redirect = [c for c in selfcheck.check_google() if c.name == "Google: адрес возврата"][0]
+        assert redirect.status == OK
+        assert "так и нужно" in redirect.detail
+        assert redirect.hints == [], "советовать здесь нечего"
+
+    def test_loopback_without_declared_type_asks_which_it_is(self, monkeypatch) -> None:
+        self._client(
+            monkeypatch, callback_mode=False, declared="",
+            redirect="http://localhost:8765/",
+        )
+        redirect = [c for c in selfcheck.check_google() if c.name == "Google: адрес возврата"][0]
+        assert redirect.status == WARN
+        hints = " ".join(redirect.hints)
+        assert "Desktop" in hints and "Web" in hints, "оба варианта должны быть названы"
+
+    def test_callback_mode_is_fine(self, monkeypatch) -> None:
+        self._client(
+            monkeypatch, callback_mode=True, declared="web",
+            redirect="https://operon.amvera.io/oauth2/callback",
+        )
+        redirect = [c for c in selfcheck.check_google() if c.name == "Google: адрес возврата"][0]
+        assert redirect.status == OK
+
+    def test_desktop_with_public_redirect_is_a_contradiction(self, monkeypatch) -> None:
+        """Заявлен Desktop, а адрес публичный — Google откажет уже после клика."""
+        self._client(
+            monkeypatch, callback_mode=True, declared="desktop",
+            redirect="https://operon.amvera.io/oauth2/callback",
+        )
+        conflict = [c for c in selfcheck.check_google() if c.name == "Google: тип клиента"]
+        assert conflict and conflict[0].status == FAIL

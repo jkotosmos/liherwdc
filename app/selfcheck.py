@@ -236,20 +236,48 @@ def check_google() -> list[Check]:
 
     if client["configured"]:
         checks.append(Check("Google: OAuth-клиент", OK, client["source"]))
-        checks.append(
-            Check(
-                "Google: адрес возврата",
-                OK if client["callback_mode"] else WARN,
-                client["redirect_uri"],
-                []
-                if client["callback_mode"]
-                else [
-                    "Режим с копированием кода вручную. Для клиента типа "
-                    "«Web application» задайте OPERON_PUBLIC_URL — код придёт "
-                    "на сервер сам."
-                ],
+
+        # Для Desktop-клиента петлевой адрес — это норма, а не недоработка.
+        # Советовать здесь «переключитесь на публичный адрес» значило бы
+        # отправить человека чинить то, что уже верно.
+        declared = settings.google_client_type
+        if client["callback_mode"]:
+            detail = client["redirect_uri"] + " (код придёт на сервер сам)"
+            checks.append(Check("Google: адрес возврата", OK, detail))
+            if declared == "desktop":
+                checks.append(
+                    Check(
+                        "Google: тип клиента",
+                        FAIL,
+                        "заявлен desktop, но адрес возврата публичный",
+                        ["Desktop-клиент такой адрес не примет. Уберите "
+                         "OPERON_OAUTH_REDIRECT_URI либо смените тип клиента."],
+                    )
+                )
+        elif declared == "desktop":
+            checks.append(
+                Check(
+                    "Google: адрес возврата",
+                    OK,
+                    client["redirect_uri"] + " (клиент Desktop — так и нужно)",
+                )
             )
-        )
+        else:
+            checks.append(
+                Check(
+                    "Google: адрес возврата",
+                    WARN,
+                    client["redirect_uri"],
+                    [
+                        "Код придётся копировать из строки браузера вручную.",
+                        "Если клиент типа Desktop — так и задумано, укажите "
+                        "OPERON_GOOGLE_CLIENT_TYPE=desktop, и это перестанет "
+                        "быть замечанием.",
+                        "Если клиент типа Web — задайте OPERON_PUBLIC_URL, "
+                        "код придёт на сервер сам.",
+                    ],
+                )
+            )
     else:
         checks.append(
             Check(
