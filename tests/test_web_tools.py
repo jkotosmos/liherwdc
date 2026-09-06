@@ -175,3 +175,48 @@ class TestRegistration:
         assert probe.names() == ["internet_search", "open_url"]
         # Чтение интернета данные не меняет — подтверждение не требуется.
         assert all(spec.requires_confirmation is False for spec in probe.all())
+
+
+class TestSearchErrorsExplainThemselves:
+    """Совет «проверьте ключ» вреден, когда ключ верен, а выключен API."""
+
+    @staticmethod
+    def _http_error(status: int, payload=None, text: str = ""):
+        import httpx
+
+        response = httpx.Response(
+            status,
+            json=payload if payload is not None else None,
+            text=text if payload is None else None,
+            request=httpx.Request("GET", "https://example.test"),
+        )
+        return httpx.HTTPStatusError("ошибка", request=response.request, response=response)
+
+    def test_google_disabled_api_is_quoted_verbatim(self) -> None:
+        from app.tools.web import _describe_search_error
+
+        message = _describe_search_error(
+            "google",
+            self._http_error(403, {"error": {"message": "Custom Search API has not been used in project 307680726974 before or it is disabled."}}),
+        )
+        assert "Custom Search API" in message
+        assert "307680726974" in message, "номер проекта нужен, чтобы найти нужную страницу"
+        assert "проверьте ключ" not in message.lower(), "ключ здесь ни при чём"
+
+    def test_plain_string_error_is_shown(self) -> None:
+        from app.tools.web import _describe_search_error
+
+        message = _describe_search_error("tavily", self._http_error(401, {"error": "Invalid API key"}))
+        assert "Invalid API key" in message
+
+    def test_bodyless_error_still_hints(self) -> None:
+        """Без объяснения от поставщика подсказка нужна, но по коду ответа."""
+        from app.tools.web import _describe_search_error
+
+        assert "лимит" in _describe_search_error("brave", self._http_error(429, text=""))
+        assert "ключ" in _describe_search_error("brave", self._http_error(401, text=""))
+
+    def test_provider_name_is_named(self) -> None:
+        from app.tools.web import _describe_search_error
+
+        assert "serper" in _describe_search_error("serper", self._http_error(500, text="oops"))

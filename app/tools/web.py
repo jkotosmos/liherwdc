@@ -137,6 +137,39 @@ def _google_cse(query: str, limit: int) -> list[dict[str, str]]:
 PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "google": _google_cse}
 
 
+def _describe_search_error(provider: str, exc: httpx.HTTPStatusError) -> str:
+    """Объясняет отказ поисковика словами самого поисковика.
+
+    Прежний текст на любой код советовал «проверьте ключ и лимиты» — и был
+    вреден в самом частом случае: у Google ключ верный, но не включён Custom
+    Search API. Человек шёл перевыпускать ключ и не находил ничего.
+    Поставщик обычно объясняет причину сам; наше дело — не заслонить её.
+    """
+    code = exc.response.status_code
+    detail = ""
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message") or "")
+            elif isinstance(error, str):
+                detail = error
+            detail = detail or str(payload.get("message") or "")
+    except ValueError:
+        detail = exc.response.text[:300]
+
+    if detail:
+        return f"Поисковый сервис {provider} ответил {code}: {detail[:400]}"
+
+    hint = {
+        401: "ключ не принят — проверьте его.",
+        403: "доступ запрещён: ключ, права или отключённый API.",
+        429: "исчерпан лимит запросов тарифа.",
+    }.get(code, "проверьте ключ и лимиты тарифа.")
+    return f"Поисковый сервис {provider} ответил {code}: {hint}"
+
+
 # --- инструменты -----------------------------------------------------------
 
 
@@ -157,10 +190,7 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
     except KeyError as exc:
         raise ToolError(f"Для провайдера «{provider}» не задан ключ: {exc}") from exc
     except httpx.HTTPStatusError as exc:
-        raise ToolError(
-            f"Поисковый сервис {provider} ответил {exc.response.status_code}. "
-            "Проверьте ключ и лимиты тарифа."
-        ) from exc
+        raise ToolError(_describe_search_error(provider, exc)) from exc
     except httpx.HTTPError as exc:
         raise ToolError(f"Не удалось обратиться к поисковому сервису {provider}: {exc}") from exc
 
