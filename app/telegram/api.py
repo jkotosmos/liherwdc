@@ -24,8 +24,10 @@ class TelegramAPI:
     def __init__(self, token: str, timeout: float = 60.0) -> None:
         if not token:
             raise TelegramError("Не задан TELEGRAM_BOT_TOKEN")
+        self._token = token
         self._url = f"{BASE}/bot{token}"
-        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=15.0))
+        self._timeout = httpx.Timeout(timeout, connect=15.0)
+        self._client = httpx.Client(timeout=self._timeout)
 
     def close(self) -> None:
         self._client.close()
@@ -130,6 +132,28 @@ class TelegramAPI:
             self._call("sendChatAction", {"chat_id": chat_id, "action": action})
         except TelegramError:
             pass  # индикатор набора не критичен
+
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        """Метаданные файла, включая путь для скачивания."""
+        return self._call("getFile", {"file_id": file_id})
+
+    def download_file(self, file_path: str) -> bytes:
+        """Скачивает файл по пути из getFile.
+
+        Telegram отдаёт файлы через отдельный адрес /file/bot<token>/<path>,
+        а не через обычный метод API, поэтому запрос здесь прямой.
+        """
+        url = f"{BASE}/file/bot{self._token}/{file_path}"
+        try:
+            response = self._client.get(url, timeout=self._timeout)
+        except httpx.HTTPError as exc:
+            raise TelegramError(f"Сеть недоступна при скачивании файла: {exc}") from exc
+        if response.status_code != 200:
+            raise TelegramError(
+                f"Не удалось скачать файл ({response.status_code}). "
+                "Возможно, ссылка устарела — пришлите файл заново."
+            )
+        return response.content
 
     def delete_message(self, chat_id: int, message_id: int) -> None:
         try:

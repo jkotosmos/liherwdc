@@ -21,7 +21,7 @@ from typing import Any
 from ..agent import agent as default_agent
 from ..config import settings
 from ..integrations import google_client, google_oauth
-from ..kb import knowledge_base
+from ..kb import intake, knowledge_base
 from ..sessions import store
 from .. import reminders
 from .api import TelegramAPI, TelegramError
@@ -67,6 +67,8 @@ class ChatState:
     # Одноразовый state выданной ссылки — по нему забираем результат,
     # если код пришёл на сервер сам (клиент типа Web).
     oauth_state: str = ""
+    # Присланный документ, ожидающий решения: класть его в базу знаний или нет.
+    pending_file: Any = None
 
     @property
     def oauth_expired(self) -> bool:
@@ -172,11 +174,27 @@ class TelegramBot:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
 
+        if message.get("document"):
+            self._handle_document(chat_id, message["document"], message.get("caption", ""))
+            return
+
         if not text:
+            kind = next(
+                (k for k in ("voice", "audio", "video", "photo", "sticker") if k in message),
+                "",
+            )
+            hint = {
+                "voice": "Голосовые сообщения пока не распознаю.",
+                "audio": "Аудио пока не распознаю.",
+                "video": "Видео пока не распознаю.",
+                "photo": "Картинки пока не читаю — пришлите документ файлом.",
+            }.get(kind, "Пока понимаю текст и документы.")
             self._api.send_message(
                 chat_id,
-                "Пока понимаю только текст. Голосовые сообщения и файлы — "
-                "в следующей версии.",
+                escape(
+                    f"{hint} Документы принимаю файлом: "
+                    ".docx, .pdf, .xlsx, .pptx, .md, .csv, .json."
+                ),
             )
             return
 
@@ -226,6 +244,103 @@ class TelegramBot:
             self._api.send_message(
                 chat_id, "Неизвестная команда. Есть /new, /status, /auth, /help."
             )
+
+    # --- приём документов ---
+
+    def _handle_document(self, chat_id: int, document: dict[str, Any], caption: str) -> None:
+        """Скачивает присланный файл, разбирает и спрашивает, класть ли в базу.
+
+        Файл в базе знаний — это изменение данных, поэтому решение принимает
+        человек, как и по любому другому изменению.
+        """
+        state = self._states.setdefault(chat_id, ChatState())
+        if state.cards or state.pending_file:
+            self._api.send_message(chat_id, "Сначала ответьте на запрос выше.")
+            return
+
+        name = document.get("file_name") or "документ"
+        size = document.get("file_size") or 0
+        if size > intake.MAX_FILE_BYTES:
+            self._api.send_message(
+                chat_id,
+                escape(
+                    f"«{name}» весит {size // (1024 * 1024)} МБ — Telegram не отдаёт "
+                    "ботам файлы больше 20 МБ. Загрузите его через панель Amvera."
+                ),
+            )
+            return
+
+        self._api.send_chat_action(chat_id, "typing")
+        try:
+            meta = self._api.get_file(document["file_id"])
+            data = self._api.download_file(meta["file_path"])
+        except TelegramError as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+
+        try:
+            prepared = intake.prepare(data, name, category=caption)
+        except intake.IntakeError as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+
+        state.pending_file = prepared
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ В базу знаний", "callback_data": "f:add"},
+                    {"text": "✕ Не сохранять", "callback_data": "f:no"},
+                ]
+            ]
+        }
+        lines = [
+            "<b>Документ разобран</b>",
+            f"<b>Файл:</b> {escape(prepared.original_name)}",
+            f"<b>Размер:</b> {prepared.size // 1024} КБ, извлечено {prepared.characters} символов",
+            f"<b>Путь в базе:</b> {escape(prepared.relative_path)}",
+            "",
+            "<b>Начало текста:</b>",
+            f"<pre>{escape(prepared.preview[:350])}</pre>",
+            "",
+            "<i>Сохранить в базу знаний? Без ответа файл не сохраняется.</i>",
+        ]
+        self._api.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
+
+    def _handle_file_decision(self, callback: dict[str, Any], chat_id: int, verdict: str) -> None:
+        state = self._states.get(chat_id)
+        prepared = state.pending_file if state else None
+        if prepared is None:
+            self._api.answer_callback_query(callback["id"], "Файл уже обработан.")
+            return
+
+        state.pending_file = None
+        message_id = callback["message"]["message_id"]
+
+        if verdict != "add":
+            self._api.answer_callback_query(callback["id"], "Файл не сохранён")
+            self._api.edit_message_text(
+                chat_id, message_id,
+                f"<b>{escape(prepared.original_name)}</b>\n✕ Не сохранён",
+                reply_markup={"inline_keyboard": []},
+            )
+            return
+
+        try:
+            path = intake.save(prepared)
+        except intake.IntakeError as exc:
+            self._api.answer_callback_query(callback["id"], "Ошибка")
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+
+        stats = knowledge_base.stats
+        self._api.answer_callback_query(callback["id"], "Добавлено")
+        self._api.edit_message_text(
+            chat_id, message_id,
+            f"<b>{escape(prepared.original_name)}</b>\n"
+            f"✅ В базе знаний: {escape(prepared.relative_path)}\n"
+            f"Документов всего: {stats['documents']}",
+            reply_markup={"inline_keyboard": []},
+        )
 
     # --- подключение Google ---
 
@@ -451,6 +566,11 @@ class TelegramBot:
             return
 
         prefix, token = data.split(":", 1)
+
+        if prefix == "f":
+            self._handle_file_decision(callback, chat_id, token)
+            return
+
         card = state.cards.get(token)
         if card is None:
             self._api.answer_callback_query(callback["id"], "Это подтверждение уже обработано.")

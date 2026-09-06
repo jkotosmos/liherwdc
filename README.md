@@ -238,6 +238,7 @@ python -m app.integrations.google_auth
 | `kpi_upsert` | Завести показатель или записать факт | **да** |
 | `protocol_list` | Протоколы встреч: договорённости, решения | — |
 | `protocol_save` | Сохранить протокол и поставить поручения из него | **да** |
+| — | Документ, присланный боту файлом, попадает в базу знаний | **да** |
 | `task_create` | Фиксация поручения | **да** |
 | `task_update` | Смена статуса, срока, ответственного | **да** |
 | `internet_search` | Поиск в интернете (Tavily / Brave / Serper / Google CSE) | — |
@@ -270,8 +271,9 @@ python -m app.integrations.google_auth
 ## Разработка
 
 ```bash
-python -m app.selfcheck         # проверить, заработает ли всё прямо сейчас
-python -m pytest tests/ -q      # 353 теста, ~5 с
+python -m app.selfcheck         # заработает ли всё прямо сейчас (живые сервисы)
+python -m app.acceptance        # прогон по пунктам ТЗ (отчёт для заказчика)
+python -m pytest tests/ -q      # 384 теста, ~5 с
 python run.py --reload          # автоперезапуск
 ```
 

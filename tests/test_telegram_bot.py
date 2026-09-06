@@ -265,12 +265,15 @@ class TestCommands:
         bot._handle_update(message("/чтото"))
         assert "Неизвестная команда" in api.texts()[0]
 
-    def test_non_text_message_is_answered_politely(self, monkeypatch) -> None:
+    def test_voice_message_says_what_is_accepted(self, monkeypatch) -> None:
+        """Отказ должен называть, что бот принимает, а не только чего не умеет."""
         bot, api = self._bot(monkeypatch)
         bot._handle_update({"update_id": 1,
                             "message": {"chat": {"id": 1}, "from": {"id": ALLOWED},
                                         "voice": {"file_id": "x"}}})
-        assert "только текст" in api.texts()[0]
+        text = api.texts()[0]
+        assert "Голосовые" in text
+        assert ".docx" in text and ".pdf" in text
 
 
 class TestFormatting:
@@ -618,3 +621,117 @@ class TestProactiveReminders:
         bot, api = self._bot(monkeypatch)
         bot._handle_update(message("/status"))
         assert "Напоминания" in api.texts()[0]
+
+
+class TestDocumentUpload:
+    """То, что клиент попробует первым: прислать боту документ."""
+
+    def _bot(self, monkeypatch, tmp_path):
+        from dataclasses import replace as _replace
+
+        from app.config import settings as real
+        from app.kb import intake
+        from app.kb.store import KnowledgeBase
+
+        monkeypatch.setattr(intake, "settings", _replace(real, kb_dir=tmp_path))
+        kb = KnowledgeBase(root=tmp_path)
+        monkeypatch.setattr("app.kb.knowledge_base", kb, raising=False)
+        monkeypatch.setattr(bot_module, "knowledge_base", kb)
+
+        bot, api = make_bot(FakeAgent([{"type": "done", "stop": "end_turn"}]), monkeypatch)
+        return bot, api, kb
+
+    @staticmethod
+    def _document(name: str, size: int = 5000, caption: str = "") -> dict:
+        msg = {
+            "chat": {"id": 1},
+            "from": {"id": ALLOWED},
+            "document": {"file_id": "F1", "file_name": name, "file_size": size},
+        }
+        if caption:
+            msg["caption"] = caption
+        return {"update_id": 1, "message": msg}
+
+    @staticmethod
+    def _serve(api, payload: bytes):
+        api.get_file = lambda file_id: {"file_path": "documents/f.bin"}
+        api.download_file = lambda path: payload
+
+    def test_docx_is_parsed_and_offered_for_saving(self, monkeypatch, tmp_path) -> None:
+        from test_documents import make_docx
+
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+        self._serve(api, make_docx())
+
+        bot._handle_update(self._document("договор.docx", caption="договоры"))
+
+        card = api.texts()[-1]
+        assert "Документ разобран" in card
+        assert "договор.docx" in card
+        assert "договоры/договор.docx" in card
+        assert "Договор поставки" in card, "человек должен видеть, что именно распозналось"
+        assert api.keyboards(), "решение принимает человек, а не бот"
+
+    def test_approval_puts_it_into_the_knowledge_base(self, monkeypatch, tmp_path) -> None:
+        from test_documents import make_docx
+
+        bot, api, kb = self._bot(monkeypatch, tmp_path)
+        self._serve(api, make_docx())
+        bot._handle_update(self._document("поставка.docx", caption="договоры"))
+
+        bot._handle_update(callback("f:add"))
+
+        assert (tmp_path / "договоры" / "поставка.docx").exists()
+        kb.ensure_fresh()
+        assert kb.search("срок оплаты"), "принятый документ обязан находиться поиском"
+        assert "В базе знаний" in api.texts("edit")[-1]
+
+    def test_rejection_saves_nothing(self, monkeypatch, tmp_path) -> None:
+        from test_documents import make_docx
+
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+        self._serve(api, make_docx())
+        bot._handle_update(self._document("ненужный.docx"))
+
+        bot._handle_update(callback("f:no"))
+
+        assert list(tmp_path.rglob("*.docx")) == []
+        assert "Не сохранён" in api.texts("edit")[-1]
+
+    def test_no_answer_means_not_saved(self, monkeypatch, tmp_path) -> None:
+        """Молчание — отказ и здесь: файл лежит в памяти, но не на диске."""
+        from test_documents import make_docx
+
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+        self._serve(api, make_docx())
+        bot._handle_update(self._document("висит.docx"))
+
+        assert list(tmp_path.rglob("*.docx")) == []
+        assert bot._states[1].pending_file is not None
+
+    def test_unreadable_file_is_refused_with_reason(self, monkeypatch, tmp_path) -> None:
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+        self._serve(api, "не docx".encode())
+
+        bot._handle_update(self._document("битый.docx"))
+
+        assert "не читается" in api.texts()[-1]
+        assert not api.keyboards(), "предлагать сохранить нечитаемое нельзя"
+
+    def test_oversized_file_is_refused_before_download(self, monkeypatch, tmp_path) -> None:
+        """Скачивать 25 МБ, чтобы потом отказать, — трата времени и трафика."""
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+
+        def refuse(*a, **k):
+            pytest.fail("файл не должен скачиваться")
+
+        api.get_file = refuse
+        bot._handle_update(self._document("большой.pdf", size=25 * 1024 * 1024))
+
+        assert "20 МБ" in api.texts()[-1]
+
+    def test_unsupported_format_is_refused(self, monkeypatch, tmp_path) -> None:
+        bot, api, _ = self._bot(monkeypatch, tmp_path)
+        self._serve(api, b"PK\x03\x04")
+        bot._handle_update(self._document("архив.zip"))
+        assert "не принимается" in api.texts()[-1]
