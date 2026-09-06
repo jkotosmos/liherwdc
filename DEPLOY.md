@@ -222,14 +222,30 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Файл настроек кладётся в корень репозитория **с именем ровно `.env`**:
+Файл настроек кладётся в корень репозитория **с именем ровно `.env`**.
+Сначала найдите, куда его скачал браузер:
 
 ```powershell
-Copy-Item "$HOME\Downloads\operon.env" .env
+Get-ChildItem -Path $HOME -Recurse -Filter "*operon*" -ErrorAction SilentlyContinue |
+    Select-Object FullName, Length
 ```
 
-> Блокнот Windows дописывает `.txt` к имени. Проверьте, что получился
-> именно `.env`: `Get-ChildItem -Force .env`
+Затем скопируйте по найденному пути:
+
+```powershell
+Copy-Item "C:\путь\из\предыдущей\команды" .env
+Get-ChildItem -Force .env
+```
+
+Вторая команда — проверка. Блокнот Windows молча дописывает `.txt`, и
+получается `.env.txt`, которого приложение не увидит.
+
+Файла нет вообще? Скопируйте `.env.example` и заполните руками:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
 
 Проверка и запуск:
 

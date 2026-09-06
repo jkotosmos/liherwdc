@@ -276,7 +276,7 @@ python -m app.integrations.google_auth
 ```bash
 python -m app.selfcheck         # заработает ли всё прямо сейчас (живые сервисы)
 python -m app.acceptance        # прогон по пунктам ТЗ (отчёт для заказчика)
-python -m pytest tests/ -q      # 397 тестов, ~5 с
+python -m pytest tests/ -q      # 400 тестов, ~5 с
 python run.py --reload          # автоперезапуск
 ```
 
