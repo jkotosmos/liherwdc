@@ -96,3 +96,56 @@ class TestTokensAreUsable:
             {"OPERON_PUBLIC_URL": " https://operon.amvera.io/ "}, "settings.public_url"
         )
         assert url == "https://operon.amvera.io"
+
+
+class TestTimezoneNeverThrows:
+    """Запасной вариант не должен зависеть от того, из-за чего отказал основной.
+
+    На Windows нет системной базы IANA. Прежний запасной вариант возвращал
+    ZoneInfo("UTC") — и падал сам, потому что «UTC» ищется в той же базе.
+    Исключение вылетало из свойства settings.tz и роняло любой вызов
+    datetime.now(...): создание поручения, сохранение протокола, сводку.
+    """
+
+    @staticmethod
+    def _without_tz_database(monkeypatch):
+        import sys
+        import zoneinfo
+
+        monkeypatch.setattr(zoneinfo, "TZPATH", ())
+        zoneinfo.reset_tzpath([])
+        monkeypatch.setitem(sys.modules, "tzdata", None)
+        monkeypatch.setattr(
+            zoneinfo, "ZoneInfo", _always_missing, raising=False
+        )
+
+    def test_unknown_timezone_falls_back_without_raising(self) -> None:
+        from datetime import datetime
+
+        conf = Settings(timezone_name="Такого/Пояса/Нет")
+        tz = conf.tz  # не должно бросить
+
+        assert datetime.now(tz).utcoffset() is not None
+
+    def test_datetime_works_with_the_fallback(self) -> None:
+        """Именно здесь падало: datetime.now(settings.tz) в task_create."""
+        from datetime import datetime
+
+        conf = Settings(timezone_name="Ерунда")
+        stamp = datetime.now(conf.tz).isoformat(timespec="seconds")
+        assert stamp.endswith("+00:00"), "запасной вариант — UTC"
+
+    def test_valid_timezone_is_honoured(self) -> None:
+        conf = Settings(timezone_name="Europe/Moscow")
+        assert "Moscow" in str(conf.tz)
+
+    def test_tzdata_is_declared(self) -> None:
+        """На Windows базы часовых поясов нет в системе, её ставят пакетом."""
+        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        assert "tzdata" in text
+
+
+def _always_missing(key):
+    from zoneinfo import ZoneInfoNotFoundError
+
+    raise ZoneInfoNotFoundError(f"No time zone found with key {key}")

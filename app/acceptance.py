@@ -134,6 +134,23 @@ def run_turn(agent, session, script: list[dict[str, Any]], text: str) -> list[di
     return list(agent.send_user_message(session, text))
 
 
+def call(registry, tool: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Вызывает инструмент и всегда возвращает разбираемый ответ.
+
+    Инструмент, вернувший ошибку, отдаёт текст, а не JSON. Прежде прогон
+    падал на нём трейсбеком, и причина терялась: вместо «инструмент ответил
+    вот так» человек видел JSONDecodeError. Отчёт о проверке обязан называть
+    причину, а не обрываться.
+    """
+    content, is_error = registry.execute(tool, payload)
+    if is_error:
+        return {"status": "error", "error": content}
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"status": "error", "error": f"неразбираемый ответ: {content[:200]}"}
+
+
 # --- проверки ---------------------------------------------------------------
 
 
@@ -250,13 +267,13 @@ def main() -> int:
     say("confirmation_required" in kinds, "Действие остановлено и показана карточка")
     say(session.awaiting_confirmation, "Ход заморожен до ответа человека")
 
-    before = json.loads(registry.execute("tasks_list", {})[0]).get("count", 0)
+    before = call(registry, "tasks_list", {}).get("count", 0)
     say(before == 0, "До подтверждения ничего не записано")
 
     resumed = list(agent.resume_with_decisions(session, {}, {}))
     say(any(e["type"] == "tool_declined" for e in resumed),
         "Отсутствие решения означает отказ")
-    after = json.loads(registry.execute("tasks_list", {})[0]).get("count", 0)
+    after = call(registry, "tasks_list", {}).get("count", 0)
     say(after == 0, "После отказа по-прежнему ничего не записано")
 
     # --- 4. Поручения и сроки ---
@@ -273,11 +290,12 @@ def main() -> int:
     approved = list(
         agent.resume_with_decisions(session2, {"t1": "approve"}, {})
     )
-    tasks = json.loads(registry.execute("tasks_list", {})[0])
-    say(tasks.get("count") == 1, "После подтверждения поручение записано")
+    tasks = call(registry, "tasks_list", {})
+    say(tasks.get("count") == 1, "После подтверждения поручение записано",
+        tasks.get("error", "")[:120])
     say(tasks.get("overdue_count") == 1, "Просрочка посчитана автоматически")
 
-    protocol = json.loads(registry.execute("protocol_save", {
+    protocol = call(registry, "protocol_save", {
         "title": "Планёрка по продажам",
         "held_on": date.today().isoformat(),
         "agreements": ["Скидку сверх 15% согласовывает директор"],
@@ -288,11 +306,12 @@ def main() -> int:
             {"title": "Уточнить логистику"},
         ],
         "open_questions": ["Кто отвечает за логистику"],
-    })[0])
-    say(protocol.get("status") == "created", "Протокол встречи сохранён", protocol.get("protocol_id", ""))
+    })
+    say(protocol.get("status") == "created", "Протокол встречи сохранён",
+        protocol.get("protocol_id") or protocol.get("error", "")[:120])
     say(len(protocol.get("tasks_created", [])) == 2,
         "Поручения из протокола попали в реестр")
-    say(protocol["warnings"]["without_assignee"] == ["Уточнить логистику"],
+    say(protocol.get("warnings", {}).get("without_assignee") == ["Уточнить логистику"],
         "Ненайденный ответственный отмечен, а не придуман")
 
     registry.execute("kpi_upsert", {"name": "Выручка", "period": "2026-09",
@@ -300,8 +319,8 @@ def main() -> int:
     registry.execute("kpi_upsert", {"name": "Стоимость привлечения", "period": "2026-09",
                                     "plan": 3000, "fact": 4200, "direction": "lower_is_better",
                                     "warning_pct": 10, "critical_pct": 25})
-    kpis = json.loads(registry.execute("kpi_list", {})[0])
-    statuses = {k["name"]: k["status"] for k in kpis["kpi"]}
+    kpis = call(registry, "kpi_list", {})
+    statuses = {k["name"]: k["status"] for k in kpis.get("kpi", [])}
     say(statuses.get("Выручка") == "warning", "Отклонение выручки посчитано по порогу")
     say(statuses.get("Стоимость привлечения") == "critical",
         "Перерасход распознан как критичный (направление показателя учтено)")
@@ -326,7 +345,7 @@ def main() -> int:
     section("6. Интернет: внешнее отделено от внутреннего")
 
     if "internet_search" in registry.names():
-        result = json.loads(registry.execute("internet_search", {"query": "ставка ЦБ"})[0])
+        result = call(registry, "internet_search", {"query": "ставка ЦБ"})
         if result.get("status") == "not_configured":
             say(True, "Без ключа поиска агент честно сообщает о недоступности",
                 "и отвечает только по внутренним данным")

@@ -93,6 +93,27 @@ def check_settings() -> list[Check]:
             )
         )
 
+    # Подмена часового пояса на UTC происходит молча, а стоит трёх часов
+    # в сроках поручений и в часе утренней сводки.
+    requested = settings.timezone_name
+    actual = str(settings.tz)
+    if requested and actual != requested:
+        checks.append(
+            Check(
+                "Часовой пояс",
+                FAIL,
+                f"запрошен {requested}, используется {actual}",
+                [
+                    "Нет базы часовых поясов IANA — на Windows её не бывает "
+                    "в системе.",
+                    "Установите: pip install tzdata (она уже в requirements.txt).",
+                    "Иначе сроки, «сегодня» и час сводки сместятся.",
+                ],
+            )
+        )
+    else:
+        checks.append(Check("Часовой пояс", OK, actual))
+
     from .integrations import token_store
 
     if token_store.encryption_enabled():

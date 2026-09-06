@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -304,11 +305,22 @@ class Settings:
         return bool(self.telegram_token and self.telegram_allowed_users)
 
     @property
-    def tz(self) -> ZoneInfo:
+    def tz(self) -> tzinfo:
+        """Часовой пояс организации. Никогда не бросает исключение.
+
+        Прежний запасной вариант возвращал ZoneInfo("UTC") — и падал сам:
+        на Windows нет системной базы IANA, а без пакета tzdata недоступен и
+        ключ «UTC». Исключение вылетало из свойства и роняло любой вызов
+        datetime.now(...) — то есть создание поручения и сохранение протокола.
+
+        Отсюда правило: запасной вариант не должен зависеть от того же, из-за
+        чего отказал основной. timezone.utc — часть стандартной библиотеки и
+        доступен всегда.
+        """
         try:
             return ZoneInfo(self.timezone_name)
-        except (ZoneInfoNotFoundError, ValueError):
-            return ZoneInfo("UTC")
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            return timezone.utc
 
     @property
     def google_token_path(self) -> Path:
