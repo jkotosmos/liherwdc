@@ -22,8 +22,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-TICK = "  ✓  "
-CROSS = "  ✗  "
+from . import console
+
+# Заполняются в main(): на русской консоли Windows «✓» роняет вывод.
+TICK = "  OK  "
+CROSS = " FAIL "
+RULE = "-"
 
 _passed = 0
 _failed = 0
@@ -39,7 +43,7 @@ def say(ok: bool, title: str, detail: str = "") -> None:
 
 
 def section(title: str) -> None:
-    print(f"\n— {title} " + "-" * max(4, 60 - len(title)))
+    print(f"\n{RULE} {title} " + "-" * max(4, 60 - len(title)))
 
 
 # --- подготовка данных ------------------------------------------------------
@@ -134,6 +138,11 @@ def run_turn(agent, session, script: list[dict[str, Any]], text: str) -> list[di
 
 
 def main() -> int:
+    global TICK, CROSS, RULE
+
+    marks = console.setup()
+    TICK, CROSS, RULE = marks["ok"], marks["fail"], marks["rule"]
+
     workspace = Path(tempfile.mkdtemp(prefix="operon-acceptance-"))
     kb_dir = workspace / "knowledge_base"
     (kb_dir / "договоры").mkdir(parents=True)

@@ -270,10 +270,13 @@ python -m app.integrations.google_auth
 
 ## Разработка
 
+На Windows путь внутри venv — `.venv\Scripts\python.exe`, и `&&` в PowerShell 5
+не работает: команды вводятся по одной. Подробнее — в [`DEPLOY.md`](DEPLOY.md).
+
 ```bash
 python -m app.selfcheck         # заработает ли всё прямо сейчас (живые сервисы)
 python -m app.acceptance        # прогон по пунктам ТЗ (отчёт для заказчика)
-python -m pytest tests/ -q      # 384 теста, ~5 с
+python -m pytest tests/ -q      # 397 тестов, ~5 с
 python run.py --reload          # автоперезапуск
 ```
 

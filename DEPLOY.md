@@ -207,6 +207,49 @@ git push amvera claude/operon-ai-agent-06p9uw:master
 Сборка стартует автоматически. Следите за ней во вкладке **Сборка**;
 после успеха приложение поднимется на `https://<проект>.amvera.io`.
 
+## Запуск на своей машине
+
+### Windows (PowerShell)
+
+Внутри venv на Windows Python лежит в `Scripts`, а не в `bin`. И `&&` не
+работает в PowerShell 5 — команды вводятся по одной:
+
+```powershell
+cd liherwdc
+python --version
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Файл настроек кладётся в корень репозитория **с именем ровно `.env`**:
+
+```powershell
+Copy-Item "$HOME\Downloads\operon.env" .env
+```
+
+> Блокнот Windows дописывает `.txt` к имени. Проверьте, что получился
+> именно `.env`: `Get-ChildItem -Force .env`
+
+Проверка и запуск:
+
+```powershell
+.venv\Scripts\python.exe -m app.selfcheck
+.venv\Scripts\python.exe -m app.acceptance
+.venv\Scripts\python.exe run.py
+```
+
+### Linux и macOS
+
+```bash
+cd liherwdc
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp ~/Downloads/operon.env .env
+.venv/bin/python -m app.selfcheck
+.venv/bin/python run.py
+```
+
 ## Шаг 3. Проверка
 
 Самое быстрое — одна команда, она обращается к настоящим сервисам:

@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from . import console
 from .config import settings
 
 TIMEOUT = 25.0
@@ -418,6 +419,11 @@ MARK = {OK: "  OK  ", WARN: " ВНИМ ", FAIL: " СБОЙ ", SKIP: "  --  "}
 
 
 def main() -> int:
+    # Русская консоль Windows не примет «—» и оборвёт вывод на первой же строке.
+    marks = console.setup()
+    rule = marks["rule"]
+    arrow = marks["arrow"]
+
     groups = [
         ("Настройки", check_settings),
         ("Модель", check_model),
@@ -431,7 +437,7 @@ def main() -> int:
     all_checks: list[Check] = []
 
     for title, runner in groups:
-        print(f"— {title} " + "-" * (58 - len(title)))
+        print(f"{rule} {title} " + "-" * (58 - len(title)))
         try:
             checks = runner()
         except Exception as exc:  # noqa: BLE001 — проверка не должна падать сама
@@ -439,7 +445,7 @@ def main() -> int:
         for check in checks:
             print(f"[{MARK[check.status]}] {check.name}: {check.detail}")
             for hint in check.hints:
-                print(f"           → {hint}")
+                print(f"           {arrow} {hint}")
         all_checks.extend(checks)
         print()
 
