@@ -221,3 +221,41 @@ class TestGoogleRedirectAdvice:
         )
         conflict = [c for c in selfcheck.check_google() if c.name == "Google: тип клиента"]
         assert conflict and conflict[0].status == FAIL
+
+
+class TestDamagedKeys:
+    """Ключ, испорченный при вставке, сервис называет «невалидным».
+
+    Человек идёт перевыпускать исправный ключ и получает тот же ответ.
+    Проверка обязана отличить «ключ плохой» от «ключ доехал побитым».
+    """
+
+    def test_non_ascii_in_key_is_named_as_paste_damage(self, monkeypatch) -> None:
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyAD•••••••••••")
+        checks = selfcheck.check_search()
+
+        assert checks[0].status == FAIL
+        assert "испорчен при копировании" in checks[0].detail
+        assert any("Перевыпускать ключ не нужно" in h for h in checks[0].hints)
+
+    def test_dash_replacement_is_caught(self, monkeypatch) -> None:
+        """Мессенджеры превращают дефис в тире — ключ ломается незаметно."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly—abc123")  # длинное тире
+        assert selfcheck.check_search()[0].status == FAIL
+
+    def test_inner_space_is_caught(self, monkeypatch) -> None:
+        monkeypatch.setenv("SERPER_API_KEY", "abc 123")
+        assert "пробел" in selfcheck.check_search()[0].detail
+
+    def test_clean_key_passes_through(self, monkeypatch) -> None:
+        for name in selfcheck.SEARCH_KEY_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyADNuUkvzuNLRk0CvnI3sDPkLAvk2F_YJo")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "216e389d60b41470a")
+
+        assert selfcheck._damaged_keys() == []
+
+    def test_absent_keys_are_not_damaged(self, monkeypatch) -> None:
+        for name in selfcheck.SEARCH_KEY_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        assert selfcheck._damaged_keys() == []

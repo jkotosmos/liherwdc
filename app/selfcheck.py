@@ -358,9 +358,56 @@ def check_google() -> list[Check]:
 # --- интернет ---------------------------------------------------------------
 
 
+SEARCH_KEY_VARIABLES = (
+    "TAVILY_API_KEY",
+    "BRAVE_API_KEY",
+    "SERPER_API_KEY",
+    "GOOGLE_CSE_KEY",
+    "GOOGLE_CSE_ID",
+)
+
+
+def _damaged_keys() -> list[tuple[str, str]]:
+    """Ключи, повреждённые при копировании. Возвращает (имя, причина).
+
+    Ключ, в котором появились не-ASCII знаки, скопирован неудачно: терминалы
+    и мессенджеры подменяют часть символов точками или тире. Сервис на такой
+    ключ отвечает «API key not valid», и человек идёт перевыпускать исправный
+    ключ вместо того, чтобы перевставить его.
+    """
+    import os
+
+    damaged = []
+    for name in SEARCH_KEY_VARIABLES:
+        value = (os.getenv(name) or "").strip()
+        if not value:
+            continue
+        if not value.isascii():
+            bad = "".join(sorted({c for c in value if not c.isascii()}))
+            damaged.append((name, f"содержит посторонние знаки «{bad}» — испорчен при копировании"))
+        elif " " in value:
+            damaged.append((name, "содержит пробел внутри значения"))
+    return damaged
+
+
 def check_search() -> list[Check]:
     from .tools import registry
     import json as _json
+
+    damaged = _damaged_keys()
+    if damaged:
+        return [
+            Check(
+                "Интернет-поиск",
+                FAIL,
+                "; ".join(f"{name}: {why}" for name, why in damaged),
+                [
+                    "Значение испорчено при вставке, а не сервисом. "
+                    "Перевыпускать ключ не нужно — вставьте его заново.",
+                    "Проверить строку: Select-String -Path .env -Pattern KEY",
+                ],
+            )
+        ]
 
     if "internet_search" not in registry.names():
         return [
