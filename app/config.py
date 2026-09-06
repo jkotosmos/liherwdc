@@ -54,6 +54,20 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 ROUTERAI_BASE_URL = "https://routerai.ru/api/v1"
 
 
+def _str(name: str, default: str = "") -> str:
+    """Строка из окружения без окружающих пробелов и кавычек.
+
+    Файл .env правят руками, и пробел на конце строки — обычное дело. Он не
+    виден глазом, но уходит прямо в адрес запроса: токен Telegram с хвостовым
+    пробелом даёт «404 Not Found», и человек начинает искать причину в токене.
+    Кавычки снимаем по той же причине: их часто ставят по привычке.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().strip("\"'").strip()
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -104,12 +118,12 @@ class Settings:
     api_key: str = ""
     base_url: str = ""
     max_tokens: int = _int("OPERON_MAX_TOKENS", 32000)
-    effort: str = os.getenv("OPERON_EFFORT", "high")  # low|medium|high|xhigh|max
+    effort: str = _str("OPERON_EFFORT", "high")  # low|medium|high|xhigh|max
     max_tool_iterations: int = _int("OPERON_MAX_TOOL_ITERATIONS", 24)
 
     # --- Организация ---
-    org_name: str = os.getenv("OPERON_ORG_NAME", "OPERON")
-    timezone_name: str = os.getenv("OPERON_TIMEZONE", "Europe/Moscow")
+    org_name: str = _str("OPERON_ORG_NAME", "OPERON")
+    timezone_name: str = _str("OPERON_TIMEZONE", "Europe/Moscow")
 
     # --- Данные ---
     kb_dir: Path = Path(os.getenv("OPERON_KB_DIR", str(BASE_DIR / "knowledge_base")))
@@ -122,17 +136,17 @@ class Settings:
     web_search_max_uses: int = _int("OPERON_WEB_SEARCH_MAX_USES", 8)
 
     # --- Сервер ---
-    host: str = os.getenv("OPERON_HOST", "127.0.0.1")
+    host: str = _str("OPERON_HOST", "127.0.0.1")
     port: int = _int("PORT", _int("OPERON_PORT", 8000))
-    public_url: str = os.getenv("OPERON_PUBLIC_URL", "").rstrip("/")
+    public_url: str = _str("OPERON_PUBLIC_URL").rstrip("/")
 
     # --- Доступ ---
-    access_password: str = os.getenv("OPERON_ACCESS_PASSWORD", "")
-    session_secret: str = os.getenv("OPERON_SESSION_SECRET", "")
+    access_password: str = _str("OPERON_ACCESS_PASSWORD")
+    session_secret: str = _str("OPERON_SESSION_SECRET")
     auth_ttl_hours: int = _int("OPERON_AUTH_TTL_HOURS", 168)
 
     # --- Telegram ---
-    telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_token: str = _str("TELEGRAM_BOT_TOKEN")
     telegram_poll_timeout: int = _int("TELEGRAM_POLL_TIMEOUT", 30)
 
     # --- Напоминания ---
@@ -185,17 +199,16 @@ class Settings:
 
         if not self.model:
             object.__setattr__(
-                self, "model", os.getenv("OPERON_MODEL") or _default_model(provider)
+                self, "model", _str("OPERON_MODEL") or _default_model(provider)
             )
         if not self.api_key:
             object.__setattr__(
                 self,
                 "api_key",
-                os.getenv("OPERON_LLM_API_KEY")
-                or os.getenv("ROUTERAI_API_KEY")
-                or os.getenv("OPENROUTER_API_KEY")
-                or os.getenv("ANTHROPIC_API_KEY")
-                or "",
+                _str("OPERON_LLM_API_KEY")
+                or _str("ROUTERAI_API_KEY")
+                or _str("OPENROUTER_API_KEY")
+                or _str("ANTHROPIC_API_KEY"),
             )
         if not self.base_url:
             default_base = {
@@ -205,12 +218,12 @@ class Settings:
             # ANTHROPIC_BASE_URL учитываем только для самой Anthropic: иначе
             # оставшаяся в окружении переменная увела бы запросы стороннего
             # шлюза на чужой адрес.
-            anthropic_base = os.getenv("ANTHROPIC_BASE_URL", "") if provider == "anthropic" else ""
+            anthropic_base = _str("ANTHROPIC_BASE_URL") if provider == "anthropic" else ""
             object.__setattr__(
                 self,
                 "base_url",
                 (
-                    os.getenv("OPERON_LLM_BASE_URL") or default_base or anthropic_base
+                    _str("OPERON_LLM_BASE_URL") or default_base or anthropic_base
                 ).rstrip("/"),
             )
         else:
@@ -308,11 +321,11 @@ class Settings:
 
     @property
     def google_client_id(self) -> str:
-        return (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+        return _str("GOOGLE_CLIENT_ID")
 
     @property
     def google_client_secret_value(self) -> str:
-        return (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+        return _str("GOOGLE_CLIENT_SECRET")
 
     @property
     def google_client_type(self) -> str:
@@ -323,7 +336,7 @@ class Settings:
         их значит получить redirect_uri_mismatch уже после нажатия ссылки, когда
         причина совсем не очевидна.
         """
-        return (os.getenv("OPERON_GOOGLE_CLIENT_TYPE") or "").strip().lower()
+        return _str("OPERON_GOOGLE_CLIENT_TYPE").lower()
 
     @property
     def oauth_callback_path(self) -> str:
@@ -342,7 +355,7 @@ class Settings:
         поэтому пользователь копирует адрес из строки браузера и отдаёт боту.
         Этот режим включается, когда публичный адрес не задан.
         """
-        explicit = (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "").strip()
+        explicit = _str("OPERON_OAUTH_REDIRECT_URI")
         if explicit:
             return explicit
         # Тип клиента важнее наличия публичного адреса: Desktop-клиент
