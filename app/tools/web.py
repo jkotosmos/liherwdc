@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from ..search_keys import damaged_keys
 from .base import ToolError, ToolSpec, registry
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -27,10 +28,9 @@ NOT_CONFIGURED = (
     "Интернет-поиск не настроен: нет ключа поискового API. Сообщи пользователю, "
     "что внешние данные сейчас недоступны, и отвечай только по внутренним "
     "источникам. Не выдумывай рыночные данные и не ссылайся на память. "
-    "Чтобы включить поиск, задайте одну из переменных: TAVILY_API_KEY, "
-    "BRAVE_API_KEY, SERPER_API_KEY или GOOGLE_CSE_KEY + GOOGLE_CSE_ID."
+    "Чтобы включить поиск, задайте TAVILY_API_KEY (или BRAVE_API_KEY, "
+    "SERPER_API_KEY)."
 )
-
 
 def _search_provider() -> str:
     explicit = (os.getenv("OPERON_SEARCH_PROVIDER") or "").strip().lower()
@@ -184,6 +184,16 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
     if provider not in PROVIDERS:
         raise ToolError(f"Неизвестный поисковый провайдер «{provider}». Доступно: {sorted(PROVIDERS)}")
 
+    damaged = damaged_keys()
+    if damaged:
+        # Запрос с побитым ключом всё равно вернёт «ключ неверный» — честнее
+        # сразу назвать настоящую причину, её поймёт и пользователь в чате.
+        raise ToolError(
+            "Интернет-поиск недоступен: "
+            + "; ".join(f"{name} {why}" for name, why in damaged)
+            + ". Вставьте ключ в настройки заново."
+        )
+
     limit = min(max(int(tool_input.get("max_results") or 6), 1), 15)
     try:
         results = PROVIDERS[provider](query, limit)
@@ -208,6 +218,7 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
         "provider": provider,
         "query": query,
         "retrieved_at": retrieved,
+        "results_count": len(results),
         "note": (
             "Это ВНЕШНИЕ данные. В ответе указывай название источника, ссылку и дату "
             f"получения ({retrieved}); не смешивай их с внутренними данными OPERON."

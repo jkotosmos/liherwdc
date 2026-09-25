@@ -8,11 +8,9 @@
 from __future__ import annotations
 
 import io
-from dataclasses import replace
 
 import pytest
 
-from app.config import settings
 from app.kb.documents import (
     DOCUMENT_SUFFIXES,
     DocumentError,

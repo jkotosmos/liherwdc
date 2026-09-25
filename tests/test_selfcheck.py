@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-import pytest
 
 from app import selfcheck
 from app.config import settings
@@ -231,7 +230,7 @@ class TestDamagedKeys:
     """
 
     def test_non_ascii_in_key_is_named_as_paste_damage(self, monkeypatch) -> None:
-        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyAD•••••••••••")
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••••••••")
         checks = selfcheck.check_search()
 
         assert checks[0].status == FAIL
@@ -250,8 +249,8 @@ class TestDamagedKeys:
     def test_clean_key_passes_through(self, monkeypatch) -> None:
         for name in selfcheck.SEARCH_KEY_VARIABLES:
             monkeypatch.delenv(name, raising=False)
-        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyADNuUkvzuNLRk0CvnI3sDPkLAvk2F_YJo")
-        monkeypatch.setenv("GOOGLE_CSE_ID", "216e389d60b41470a")
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyFAKEfakeFAKEfakeFAKEfakeFAKEfake0")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
 
         assert selfcheck._damaged_keys() == []
 

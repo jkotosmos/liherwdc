@@ -7,7 +7,6 @@ Telegram. Всё остальное в этом модуле — удобств�
 
 from __future__ import annotations
 
-import io
 from dataclasses import replace
 
 import pytest

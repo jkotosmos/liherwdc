@@ -197,10 +197,10 @@ class TestSearchErrorsExplainThemselves:
 
         message = _describe_search_error(
             "google",
-            self._http_error(403, {"error": {"message": "Custom Search API has not been used in project 307680726974 before or it is disabled."}}),
+            self._http_error(403, {"error": {"message": "Custom Search API has not been used in project 111111111111 before or it is disabled."}}),
         )
         assert "Custom Search API" in message
-        assert "307680726974" in message, "номер проекта нужен, чтобы найти нужную страницу"
+        assert "111111111111" in message, "номер проекта нужен, чтобы найти нужную страницу"
         assert "проверьте ключ" not in message.lower(), "ключ здесь ни при чём"
 
     def test_plain_string_error_is_shown(self) -> None:
@@ -220,3 +220,30 @@ class TestSearchErrorsExplainThemselves:
         from app.tools.web import _describe_search_error
 
         assert "serper" in _describe_search_error("serper", self._http_error(500, text="oops"))
+
+
+class TestDamagedKeyAtRuntime:
+    """Побитый при вставке ключ бот называет прямо, а не пересказывает «key not valid»."""
+
+    def test_masked_key_reported_without_calling_service(self, monkeypatch) -> None:
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("с побитым ключом в сервис идти незачем")
+
+        monkeypatch.setattr(web.httpx, "get", forbidden)
+        with pytest.raises(ToolError, match="испорчен при копировании"):
+            web._internet_search({"query": "рынок"})
+
+    def test_results_count_reported(self, monkeypatch) -> None:
+        monkeypatch.setenv("TAVILY_API_KEY", "k")
+
+        def fake_post(url, **kwargs):
+            return httpx.Response(200, json={"results": [
+                {"title": "a", "url": "https://a.test", "content": "x"},
+                {"title": "b", "url": "https://b.test", "content": "y"},
+            ]}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(web.httpx, "post", fake_post)
+        assert web._internet_search({"query": "рынок"})["results_count"] == 2

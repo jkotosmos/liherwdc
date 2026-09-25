@@ -72,10 +72,10 @@ class TestTokensAreUsable:
 
     def test_telegram_token_with_trailing_space(self) -> None:
         token = self._in_fresh_process(
-            {"TELEGRAM_BOT_TOKEN": "8934620426:AAGc-6l8LDCoHqQ "},
+            {"TELEGRAM_BOT_TOKEN": "1234567890:AAFakeTokenForTests "},
             "repr(settings.telegram_token)",
         )
-        assert token == "'8934620426:AAGc-6l8LDCoHqQ'"
+        assert token == "'1234567890:AAFakeTokenForTests'"
         assert " " not in token.strip("'"), "пробел ушёл бы в адрес запроса и дал 404"
 
     def test_api_key_in_quotes(self, monkeypatch) -> None:

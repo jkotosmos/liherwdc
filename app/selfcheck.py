@@ -21,6 +21,8 @@ from typing import Any
 import httpx
 
 from . import console
+from .search_keys import GOOGLE_CSE_SHUTDOWN, SEARCH_KEY_VARIABLES  # noqa: F401
+from .search_keys import damaged_keys as _damaged_keys
 from .config import settings
 
 TIMEOUT = 25.0
@@ -357,36 +359,6 @@ def check_google() -> list[Check]:
 # --- интернет ---------------------------------------------------------------
 
 
-SEARCH_KEY_VARIABLES = (
-    "TAVILY_API_KEY",
-    "BRAVE_API_KEY",
-    "SERPER_API_KEY",
-    "GOOGLE_CSE_KEY",
-    "GOOGLE_CSE_ID",
-)
-
-
-def _damaged_keys() -> list[tuple[str, str]]:
-    """Ключи, повреждённые при копировании. Возвращает (имя, причина).
-
-    Ключ, в котором появились не-ASCII знаки, скопирован неудачно: терминалы
-    и мессенджеры подменяют часть символов точками или тире. Сервис на такой
-    ключ отвечает «API key not valid», и человек идёт перевыпускать исправный
-    ключ вместо того, чтобы перевставить его.
-    """
-    import os
-
-    damaged = []
-    for name in SEARCH_KEY_VARIABLES:
-        value = (os.getenv(name) or "").strip()
-        if not value:
-            continue
-        if not value.isascii():
-            bad = "".join(sorted({c for c in value if not c.isascii()}))
-            damaged.append((name, f"содержит посторонние знаки «{bad}» — испорчен при копировании"))
-        elif " " in value:
-            damaged.append((name, "содержит пробел внутри значения"))
-    return damaged
 
 
 def check_search() -> list[Check]:
@@ -404,7 +376,12 @@ def check_search() -> list[Check]:
                     "Значение испорчено при вставке, а не сервисом. "
                     "Перевыпускать ключ не нужно — вставьте его заново.",
                     "Проверить строку: Select-String -Path .env -Pattern KEY",
-                ],
+                ]
+                + (
+                    [GOOGLE_CSE_SHUTDOWN]
+                    if any(name.startswith("GOOGLE_CSE") for name, _ in damaged)
+                    else []
+                ),
             )
         ]
 
@@ -419,7 +396,10 @@ def check_search() -> list[Check]:
 
     content, is_error = registry.execute("internet_search", {"query": "ставка ЦБ РФ"})
     if is_error:
-        return [Check("Интернет-поиск", FAIL, content[:150])]
+        hints = []
+        if "google" in content:
+            hints.append(GOOGLE_CSE_SHUTDOWN)
+        return [Check("Интернет-поиск", FAIL, content[:150], hints)]
 
     payload = _json.loads(content)
     status = payload.get("status")
@@ -433,19 +413,17 @@ def check_search() -> list[Check]:
                     "Ассистент честно скажет «интернет недоступен» и ответит "
                     "только по внутренним данным — но пункт ТЗ про внешние "
                     "источники работать не будет.",
-                    "Достаточно одного: TAVILY_API_KEY, BRAVE_API_KEY, "
-                    "SERPER_API_KEY или GOOGLE_CSE_KEY + GOOGLE_CSE_ID.",
+                    "Проще всего Tavily: tavily.com → API Keys → TAVILY_API_KEY. "
+                    "Подойдут и BRAVE_API_KEY или SERPER_API_KEY.",
                 ],
             )
         ]
     if status == "ok":
-        return [
-            Check(
-                "Интернет-поиск",
-                OK,
-                f"{payload.get('provider', '?')}: найдено {payload.get('results_count', '?')}",
-            )
-        ]
+        provider = payload.get("provider", "?")
+        found = f"{provider}: найдено {payload.get('results_count', len(payload.get('results', [])))}"
+        if provider == "google":
+            return [Check("Интернет-поиск", WARN, found, [GOOGLE_CSE_SHUTDOWN])]
+        return [Check("Интернет-поиск", OK, found)]
     return [Check("Интернет-поиск", WARN, str(payload.get("hint", status))[:150])]
 
 

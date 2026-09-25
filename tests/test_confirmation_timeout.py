@@ -16,7 +16,7 @@ import pytest
 from app import agent as agent_module
 from app.agent import EXPIRED_TEMPLATE, OperonAgent, PendingAction, PendingTurn, Session
 from app.config import settings
-from app.tools.base import Preview, ToolSpec, registry
+from app.tools.base import Preview, registry
 
 
 @pytest.fixture
