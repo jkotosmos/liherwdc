@@ -333,7 +333,17 @@ class Settings:
 
     @property
     def google_client_id(self) -> str:
-        return _str("GOOGLE_CLIENT_ID")
+        """Client ID без лишнего: его часто копируют как ссылку.
+
+        «https://…apps.googleusercontent.com/» Google не узнаёт и отвечает
+        invalid_client уже после нажатия ссылки авторизации — причина
+        неочевидна. Схему и хвостовую косую черту отрезаем сами.
+        """
+        value = _str("GOOGLE_CLIENT_ID")
+        for prefix in ("https://", "http://"):
+            if value.lower().startswith(prefix):
+                value = value[len(prefix):]
+        return value.strip().rstrip("/")
 
     @property
     def google_client_secret_value(self) -> str:

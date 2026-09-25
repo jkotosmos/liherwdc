@@ -149,3 +149,19 @@ def _always_missing(key):
     from zoneinfo import ZoneInfoNotFoundError
 
     raise ZoneInfoNotFoundError(f"No time zone found with key {key}")
+
+
+class TestGoogleClientId:
+    def test_link_shaped_client_id_is_cleaned(self, monkeypatch) -> None:
+        from app.config import settings
+
+        monkeypatch.setenv(
+            "GOOGLE_CLIENT_ID", " https://123-abc.apps.googleusercontent.com/ "
+        )
+        assert settings.google_client_id == "123-abc.apps.googleusercontent.com"
+
+    def test_plain_client_id_untouched(self, monkeypatch) -> None:
+        from app.config import settings
+
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "123-abc.apps.googleusercontent.com")
+        assert settings.google_client_id == "123-abc.apps.googleusercontent.com"

@@ -139,14 +139,14 @@ class TestEnvClient:
 
     @pytest.fixture(autouse=True)
     def env_client(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GOOGLE_CLIENT_ID", "305436247271-test.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "111111111111-test.apps.googleusercontent.com")
         monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "GOCSPX-env-test")
         monkeypatch.setenv("OPERON_GOOGLE_CLIENT_SECRET", str(tmp_path / "нет.json"))
 
     def test_env_beats_missing_file(self, monkeypatch) -> None:
         monkeypatch.setenv("OPERON_OAUTH_REDIRECT_URI", "http://localhost:8765/")
         url = google_oauth.authorization_url()
-        assert "305436247271-test" in url
+        assert "111111111111-test" in url
 
     def test_web_section_when_callback_is_used(self, monkeypatch) -> None:
         """Публичный адрес приложения = клиент типа Web, секция «web»."""
