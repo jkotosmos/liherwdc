@@ -20,12 +20,14 @@ from typing import Any
 
 from ..agent import agent as default_agent
 from ..config import settings
+from ..model_choice import current_model
 from ..integrations import google_client, google_oauth
 from ..kb import intake, knowledge_base
 from ..sessions import store
 from .. import reminders
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
+from .webapp import miniapp_url
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ GREETING = (
     "/new — начать диалог заново\n"
     "/status — что подключено\n"
     "/auth — подключить Google (или переподключить)\n"
+    "/app — приложение: выбор модели, баланс, чат\n"
     "/help — подсказка"
 )
 
@@ -111,6 +114,8 @@ class TelegramBot:
             me.get("username", "?"),
             len(self._allowed),
         )
+
+        self._install_menu_button()
 
         backoff = 1.0
         while not self._stop.is_set():
@@ -240,10 +245,44 @@ class TelegramBot:
             self._api.send_message(chat_id, self._status_text(), parse_mode="HTML")
         elif command == "auth":
             self._handle_auth(chat_id)
+        elif command == "app":
+            self._handle_app(chat_id)
         else:
             self._api.send_message(
-                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /help."
+                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /app, /help."
             )
+
+    # --- Mini App ---
+
+    def _install_menu_button(self) -> None:
+        """Ставит кнопку «Открыть» только тем, кто в белом списке.
+
+        Кнопка для всех по умолчанию показала бы посторонним, что бот умеет
+        больше, чем молчать. Сбой здесь не мешает работе бота.
+        """
+        url = miniapp_url()
+        if not url:
+            return
+        for user_id in self._allowed:
+            try:
+                self._api.set_chat_menu_button(user_id, "Открыть", url)
+            except Exception as exc:  # noqa: BLE001 — кнопка необязательна
+                logger.warning("Не удалось поставить кнопку Mini App для %s: %s", user_id, exc)
+
+    def _handle_app(self, chat_id: int) -> None:
+        url = miniapp_url()
+        if not url:
+            self._api.send_message(
+                chat_id,
+                "Приложение открывается только по https. Задайте OPERON_PUBLIC_URL "
+                "(адрес проекта в Amvera, https://…) и перезапустите.",
+            )
+            return
+        self._api.send_message(
+            chat_id,
+            "Выбор модели, баланс RouterAI и чат:",
+            reply_markup={"inline_keyboard": [[{"text": "Открыть приложение", "web_app": {"url": url}}]]},
+        )
 
     # --- приём документов ---
 
@@ -431,7 +470,7 @@ class TelegramBot:
         google = google_client.status()
         lines = [
             f"<b>Ассистент {escape(settings.org_name)}</b>",
-            f"Модель: {escape(settings.model)} ({escape(settings.provider)})",
+            f"Модель: {escape(current_model())} ({escape(settings.provider)})",
             f"База знаний: {kb['documents']} документов"
             + (f" ({escape(', '.join(kb['categories']))})" if kb["categories"] else ""),
         ]

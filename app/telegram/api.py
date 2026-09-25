@@ -60,6 +60,16 @@ class TelegramAPI:
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
+    def set_chat_menu_button(self, chat_id: int, text: str, url: str) -> None:
+        """Кнопка слева от поля ввода, открывающая Mini App в этом чате."""
+        self._call(
+            "setChatMenuButton",
+            {
+                "chat_id": chat_id,
+                "menu_button": {"type": "web_app", "text": text, "web_app": {"url": url}},
+            },
+        )
+
     def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": timeout,

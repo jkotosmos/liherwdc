@@ -31,6 +31,34 @@
   }
 }
 
+/* Тема Telegram задаётся явно: webview не всегда сообщает prefers-color-scheme. */
+:root[data-theme="dark"] {
+  --bg: #191817;
+  --surface: #201f1e;
+  --surface-2: #282725;
+  --border: #35332f;
+  --text: #ecebe8;
+  --text-dim: #9b968d;
+  --accent: #e08055;
+  --accent-soft: #33251f;
+  --ok: #6fbb8c;
+  --warn: #d9ab53;
+  --danger: #e0796e;
+}
+:root[data-theme="light"] {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f1f0ed;
+  --border: #e2e0da;
+  --text: #1d1c1a;
+  --text-dim: #6b6862;
+  --accent: #b8562f;
+  --accent-soft: #f6ebe5;
+  --ok: #2f7a4f;
+  --warn: #9a6b12;
+  --danger: #a33028;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -222,3 +250,56 @@ html, body {
   .welcome { padding-top: 32px; }
   .confirm-row { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* --- вкладки: чат / модель и баланс --- */
+.tabs {
+  display: flex; gap: 4px; padding: 6px 16px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tab {
+  font: inherit; font-size: 14px; cursor: pointer;
+  flex: 1; max-width: 220px; padding: 7px 12px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--text-dim);
+}
+.tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+.settings { flex: 1; overflow-y: auto; padding: 16px; }
+.settings-inner { max-width: 760px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.card-title { font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
+.card-note { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+.card-note.error { color: var(--danger); }
+.balance { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.current-name { font-size: 17px; font-weight: 600; }
+.current-id { font-family: var(--mono); font-size: 12px; color: var(--text-dim); word-break: break-all; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 10px 0 0; font-size: 14px; }
+.facts dt { color: var(--text-dim); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.model-tools { display: flex; gap: 8px; margin: 4px 0; }
+.model-tools input, .model-tools select {
+  font: inherit; font-size: 14px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; min-width: 0;
+}
+.model-tools input { flex: 1 1 auto; width: 0; }
+.model-tools select { flex: 0 1 auto; max-width: 48%; }
+.model-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.model-item {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; background: var(--surface);
+}
+.model-item:hover { background: var(--surface-2); }
+.model-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.model-item .m-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.model-item .m-id { grid-column: 1; font-family: var(--mono); font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; }
+.model-item .m-price { grid-row: 1 / span 2; grid-column: 2; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.model-item .m-flag { font-size: 11px; color: var(--warn); }
+
+.hidden { display: none !important; }

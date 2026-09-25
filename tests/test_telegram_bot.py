@@ -735,3 +735,44 @@ class TestDocumentUpload:
         self._serve(api, b"PK\x03\x04")
         bot._handle_update(self._document("архив.zip"))
         assert "не принимается" in api.texts()[-1]
+
+
+class TestMiniAppEntry:
+    def test_app_command_sends_web_app_button(self, monkeypatch) -> None:
+        from app.telegram import bot as bot_mod
+
+        monkeypatch.setattr(bot_mod, "miniapp_url", lambda: "https://bot.example/miniapp")
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(message("/app"))
+        button = api.keyboards()[0]["inline_keyboard"][0][0]
+        assert button["web_app"]["url"] == "https://bot.example/miniapp"
+
+    def test_app_command_explains_https_requirement(self, monkeypatch) -> None:
+        from app.telegram import bot as bot_mod
+
+        monkeypatch.setattr(bot_mod, "miniapp_url", lambda: "")
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(message("/app"))
+        assert "OPERON_PUBLIC_URL" in api.texts()[0]
+
+    def test_menu_button_only_for_allowed_users(self, monkeypatch) -> None:
+        from app.telegram import bot as bot_mod
+
+        monkeypatch.setattr(bot_mod, "miniapp_url", lambda: "https://bot.example/miniapp")
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        installed = []
+        api.set_chat_menu_button = lambda chat_id, text, url: installed.append((chat_id, url))
+        bot._install_menu_button()
+        assert installed == [(ALLOWED, "https://bot.example/miniapp")]
+
+    def test_menu_button_failure_does_not_stop_bot(self, monkeypatch) -> None:
+        from app.telegram import bot as bot_mod
+
+        monkeypatch.setattr(bot_mod, "miniapp_url", lambda: "https://bot.example/miniapp")
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+
+        def broken(*args):
+            raise RuntimeError("Telegram недоступен")
+
+        api.set_chat_menu_button = broken
+        bot._install_menu_button()  # не бросает

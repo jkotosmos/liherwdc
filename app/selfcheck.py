@@ -24,6 +24,7 @@ from . import console
 from .search_keys import GOOGLE_CSE_SHUTDOWN, SEARCH_KEY_VARIABLES  # noqa: F401
 from .search_keys import damaged_keys as _damaged_keys
 from .config import settings
+from .model_choice import current_model
 
 TIMEOUT = 25.0
 
@@ -66,8 +67,10 @@ def check_settings() -> list[Check]:
             )
         )
 
-    if settings.model:
-        checks.append(Check("Имя модели", OK, settings.model))
+    if current_model(settings):
+        chosen = current_model(settings)
+        note = "" if chosen == settings.model else " (выбрана в Mini App)"
+        checks.append(Check("Имя модели", OK, chosen + note))
     else:
         checks.append(
             Check(
@@ -135,7 +138,7 @@ def check_settings() -> list[Check]:
 
 
 def check_model() -> list[Check]:
-    if not (settings.api_key and settings.model):
+    if not (settings.api_key and current_model(settings)):
         return [Check("Шлюз модели", SKIP, "нет ключа или имени модели")]
 
     from .probe import _try_anthropic, _try_openai
@@ -145,7 +148,7 @@ def check_model() -> list[Check]:
     attempt = _try_openai if protocol == "openai" else _try_anthropic
 
     try:
-        reachable, tools_work, note = attempt(base, settings.api_key, settings.model)
+        reachable, tools_work, note = attempt(base, settings.api_key, current_model(settings))
     except Exception as exc:  # noqa: BLE001 — сюда попадают и сетевые сбои
         return [
             Check(
@@ -452,6 +455,39 @@ def _google_live_checks() -> list[Check]:
     return checks
 
 
+# --- баланс шлюза -------------------------------------------------------------
+
+
+def check_billing() -> list[Check]:
+    """То, что покажет вкладка «Модель и баланс» в Mini App."""
+    from . import routerai
+
+    if not routerai.available():
+        return []
+    data = routerai.billing()
+    unit = data.get("currency", "")
+    checks: list[Check] = []
+    if "balance" in data:
+        source = f" ({data['balance_source']})" if data.get("balance_source") else ""
+        checks.append(Check("Баланс", OK, f"{data['balance']:.2f} {unit}{source}"))
+    else:
+        checks.append(
+            Check(
+                "Баланс",
+                WARN,
+                "шлюз не сообщил баланс: " + "; ".join(data.get("errors") or ["нет данных"]),
+                ["Посмотрите сырые ответы: python -m app.routerai — и пришлите вывод."],
+            )
+        )
+    try:
+        models = routerai.list_models()
+        with_tools = sum(1 for m in models if m["tools"] is not False)
+        checks.append(Check("Каталог моделей", OK, f"{len(models)} моделей, с инструментами: {with_tools}"))
+    except routerai.BillingError as exc:
+        checks.append(Check("Каталог моделей", WARN, str(exc)))
+    return checks
+
+
 # --- интернет ---------------------------------------------------------------
 
 
@@ -568,6 +604,7 @@ def main() -> int:
     groups = [
         ("Настройки", check_settings),
         ("Модель", check_model),
+        ("Баланс шлюза", check_billing),
         ("Telegram", check_telegram),
         ("Google", check_google),
         ("Интернет", check_search),

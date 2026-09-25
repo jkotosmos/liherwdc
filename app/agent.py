@@ -20,6 +20,7 @@ import anthropic
 from .config import settings
 from .integrations import google_client
 from .llm import LLMError, build_backend
+from .model_choice import current_model
 from .kb import knowledge_base
 from .prompts import SYSTEM_PROMPT, runtime_context
 from .tools import registry
@@ -127,6 +128,7 @@ class OperonAgent:
         # Потолок ответа, если шлюз сказал, что запрошенный слишком велик.
         # У каждой модели он свой, а каталог стороннего шлюза заранее неизвестен.
         self._max_tokens_cap: int | None = None
+        self._caps_model: str = ""
 
     # --- клиент -------------------------------------------------------------
 
@@ -139,7 +141,7 @@ class OperonAgent:
                     "Не задан ключ доступа к модели. Укажите OPERON_LLM_API_KEY "
                     "(или ANTHROPIC_API_KEY / OPENROUTER_API_KEY) в переменных окружения."
                 )
-            if not settings.model:
+            if not current_model():
                 raise AgentError(
                     "Не задано имя модели. Укажите OPERON_MODEL — точное название "
                     "берётся из каталога вашего провайдера."
@@ -193,8 +195,14 @@ class OperonAgent:
         return converted
 
     def _request_params(self, session: Session) -> dict[str, Any]:
+        model = current_model()
+        if model != self._caps_model:
+            # Что шлюз не принял для прежней модели, к новой не относится.
+            self._caps_model = model
+            self._max_tokens_cap = None
+            self._unsupported_params.clear()
         params: dict[str, Any] = {
-            "model": settings.model,
+            "model": model,
             "max_tokens": self._max_tokens_cap or settings.max_tokens,
             "system": self._system(),
             "messages": self._api_messages(session),
@@ -641,7 +649,7 @@ class OperonAgent:
         if isinstance(exc, anthropic.RateLimitError):
             return "Превышен лимит запросов к API. Подождите немного и повторите."
         if isinstance(exc, anthropic.NotFoundError):
-            return f"Модель «{settings.model}» недоступна для этого ключа. Проверьте OPERON_MODEL."
+            return f"Модель «{current_model()}» недоступна для этого ключа. Выберите другую в Mini App или проверьте OPERON_MODEL."
         if exc.status_code and exc.status_code >= 500:
             return f"Сбой на стороне API Anthropic ({exc.status_code}). Повторите запрос позже."
         return f"Ошибка API Anthropic ({exc.status_code}): {getattr(exc, 'message', str(exc))}"

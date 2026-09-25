@@ -19,12 +19,13 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth
+from . import auth, model_choice, routerai
 from .agent import agent
 from .config import BASE_DIR, settings
 from .integrations import google_client, google_oauth
 from .kb import knowledge_base
 from .sessions import store
+from .telegram import webapp
 from .telegram.format import escape
 from .tools import registry
 
@@ -78,11 +79,29 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=512)
 
 
+class TelegramAuthRequest(BaseModel):
+    init_data: str = Field(min_length=1, max_length=8192)
+
+
+class ModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
 # Пути, доступные без входа: проверка живости, сама страница входа и статика.
 # Сюда же адрес возврата OAuth: на него браузер приводит Google, куки нашего
 # приложения там может не быть. Защищает не вход, а одноразовый state —
 # обменять можно только код по ранее выданной ссылке.
-PUBLIC_PATHS = {"/api/health", "/api/login", "/login", "/favicon.ico", "/oauth2/callback"}
+# Mini App: страница открыта, но всё, что она запрашивает, требует токена,
+# полученного обменом подписанных Telegram данных (/api/telegram/auth).
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/login",
+    "/login",
+    "/favicon.ico",
+    "/oauth2/callback",
+    "/miniapp",
+    "/api/telegram/auth",
+}
 
 
 def _oauth_page(title: str, body: str, ok: bool) -> HTMLResponse:
@@ -181,6 +200,11 @@ async def require_authentication(request: Request, call_next):
 
     if auth.token_is_valid(request.cookies.get(auth.COOKIE_NAME)):
         return await call_next(request)
+    # Mini App носит токен в заголовке: в веб-версии Telegram он работает во
+    # фрейме чужого сайта, и браузер туда куки не отдаёт.
+    bearer = request.headers.get("authorization", "")
+    if bearer.lower().startswith("bearer ") and auth.token_is_valid(bearer[7:].strip()):
+        return await call_next(request)
 
     if path.startswith("/api/"):
         return JSONResponse({"detail": "Требуется вход в систему."}, status_code=401)
@@ -216,6 +240,83 @@ def login(request: LoginRequest, http_request: Request) -> JSONResponse:
         secure=bool(settings.public_url.startswith("https://")),
     )
     return response
+
+
+@app.post("/api/telegram/auth")
+def telegram_auth(request: TelegramAuthRequest) -> JSONResponse:
+    """Обменивает подписанные Telegram данные Mini App на токен сессии."""
+    try:
+        user = webapp.validate(request.init_data)
+    except webapp.InitDataError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=403)
+    return JSONResponse(
+        {
+            "status": "ok",
+            "token": auth.issue_token(),
+            "user": {"id": user.get("id"), "first_name": user.get("first_name", "")},
+        }
+    )
+
+
+@app.get("/api/models")
+def models(tools_only: bool = True) -> JSONResponse:
+    """Каталог моделей шлюза с ценами за 1 млн токенов."""
+    chosen = model_choice.choice()
+    if not routerai.available():
+        return JSONResponse(
+            {"available": False, "detail": "Каталог есть только у RouterAI и OpenRouter.", "current": chosen}
+        )
+    try:
+        catalog = routerai.list_models()
+    except routerai.BillingError as exc:
+        return JSONResponse({"available": False, "detail": str(exc), "current": chosen}, status_code=502)
+    # Без вызова инструментов агент бесполезен — такие модели не предлагаем.
+    # Неизвестно (шлюз не сообщил) — показываем с пометкой.
+    listed = [m for m in catalog if not tools_only or m["tools"] is not False]
+    return JSONResponse(
+        {
+            "available": True,
+            "currency": routerai.currency(),
+            "current": chosen,
+            "models": listed,
+            "hidden_without_tools": len(catalog) - len(listed),
+        }
+    )
+
+
+@app.post("/api/model")
+def choose_model(request: ModelRequest, http_request: Request) -> JSONResponse:
+    model_id = request.model.strip()
+    if routerai.available():
+        try:
+            found = routerai.find_model(model_id)
+        except routerai.BillingError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=502)
+        if found is None:
+            return JSONResponse({"detail": f"Модели «{model_id}» нет в каталоге шлюза."}, status_code=404)
+        if found["tools"] is False:
+            return JSONResponse(
+                {"detail": "Эта модель не умеет вызывать инструменты — агент с ней работать не сможет."},
+                status_code=422,
+            )
+    who = http_request.headers.get("x-operon-user", "")[:100]
+    model_choice.set_model(model_id, changed_by=who)
+    logger.info("Модель переключена на %s (%s)", model_id, who or "веб")
+    return JSONResponse({"status": "ok", "current": model_choice.choice()})
+
+
+@app.get("/api/billing")
+def billing() -> JSONResponse:
+    """Баланс, расход по ключу и цены текущей модели."""
+    chosen = model_choice.choice()
+    if not routerai.available():
+        return JSONResponse({"available": False, "current": chosen})
+    data = routerai.billing()
+    try:
+        data["model"] = routerai.find_model(chosen["model"])
+    except routerai.BillingError as exc:
+        data["errors"].append(str(exc))
+    return JSONResponse({"available": True, "current": chosen, **data})
 
 
 @app.post("/api/logout")
@@ -283,8 +384,9 @@ def status() -> dict[str, Any]:
     kb = knowledge_base.stats
     return {
         "org": settings.org_name,
-        "model": settings.model,
+        "model": model_choice.current_model(),
         "provider": settings.provider,
+        "billing": routerai.available(),
         "effort": settings.effort if settings.effort_enabled else None,
         "auth_required": settings.auth_required,
         "timezone": settings.timezone_name,
@@ -329,6 +431,20 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+TELEGRAM_SCRIPT = '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
+
+
+@app.get("/miniapp")
+def miniapp() -> HTMLResponse:
+    """Та же страница, что веб-чат, плюс скрипт Telegram: вход по его подписи.
+
+    Скрипт подключается только здесь: в обычном веб-чате он не нужен, а
+    недоступный telegram.org задерживал бы загрузку страницы.
+    """
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(page.replace("<!--telegram-web-app-->", TELEGRAM_SCRIPT, 1))
+
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -345,7 +461,7 @@ def _startup_report() -> None:
     logger.info(
         "Провайдер: %s | модель: %s | адрес: %s",
         settings.provider,
-        settings.model,
+        model_choice.current_model(),
         settings.base_url or "api.anthropic.com",
     )
     if not settings.auth_required:

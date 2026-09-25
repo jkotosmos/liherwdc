@@ -9,7 +9,6 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from app import selfcheck
-from app.errors import ToolError
 from app.integrations import google_client
 from app.tools import drive
 

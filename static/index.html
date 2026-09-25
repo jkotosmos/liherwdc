@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ассистент OPERON</title>
 <link rel="stylesheet" href="/static/styles.css">
+<!--telegram-web-app-->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
 </head>
 <body>
@@ -23,7 +24,43 @@
     </div>
   </header>
 
-  <main class="chat" id="chat">
+  <nav class="tabs" id="tabs" role="tablist">
+    <button type="button" role="tab" class="tab active" data-view="chat" aria-selected="true">Чат</button>
+    <button type="button" role="tab" class="tab" data-view="settings" aria-selected="false">Модель и баланс</button>
+  </nav>
+
+  <section class="settings hidden" id="settings" aria-live="polite">
+    <div class="settings-inner">
+      <div class="card" id="balance-card">
+        <div class="card-title">Баланс RouterAI</div>
+        <div class="balance" id="balance-value">—</div>
+        <dl class="facts" id="balance-facts"></dl>
+        <div class="card-note" id="balance-note"></div>
+      </div>
+
+      <div class="card" id="current-card">
+        <div class="card-title">Модель сейчас</div>
+        <div class="current-name" id="current-name">—</div>
+        <div class="current-id" id="current-id"></div>
+        <dl class="facts" id="current-facts"></dl>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Выбрать модель</div>
+        <div class="model-tools">
+          <input id="model-search" type="search" placeholder="Поиск: claude, gpt, gemini…" autocomplete="off">
+          <select id="model-sort" aria-label="Сортировка">
+            <option value="name">по названию</option>
+            <option value="price">сначала дешёвые</option>
+          </select>
+        </div>
+        <div class="card-note">Цена — за 1 млн токенов: вход / выход. Показаны модели, которые умеют вызывать инструменты: без этого ассистент не может искать в базе знаний и календаре.</div>
+        <ul class="model-list" id="model-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <main class="chat view-chat" id="chat">
     <section class="welcome" id="welcome">
       <h1>Чем помочь?</h1>
       <p class="welcome-sub">
@@ -41,7 +78,7 @@
     <div id="messages"></div>
   </main>
 
-  <footer class="composer">
+  <footer class="composer view-chat">
     <div class="composer-inner">
       <textarea id="input" rows="1" placeholder="Спросите о продуктах, партнёрах, тарифах, KPI, задачах…" autocomplete="off"></textarea>
       <button id="send" class="btn btn-primary" type="button" aria-label="Отправить">

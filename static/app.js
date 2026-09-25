@@ -11,6 +11,45 @@ let sessionId = null;
 let busy = false;
 
 /* ------------------------------------------------------------------ */
+/* Telegram Mini App: вход по подписи Telegram, токен — в заголовке.   */
+/* В веб-версии Telegram страница живёт во фрейме, и куки туда не      */
+/* доходят, поэтому все запросы несут Authorization: Bearer.           */
+/* ------------------------------------------------------------------ */
+
+const tg = window.Telegram && window.Telegram.WebApp;
+const inTelegram = Boolean(tg && tg.initData);
+let authToken = null;
+const nativeFetch = window.fetch.bind(window);
+
+window.fetch = (url, options = {}) => {
+  if (authToken) {
+    options = { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${authToken}` } };
+  }
+  return nativeFetch(url, options);
+};
+
+async function telegramLogin() {
+  tg.ready();
+  tg.expand();
+  if (tg.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
+  const response = await nativeFetch("/api/telegram/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ init_data: tg.initData }),
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch { /* без тела */ }
+  if (!response.ok) {
+    el("model-line").textContent = payload.detail || `Вход не выполнен (HTTP ${response.status})`;
+    input.disabled = true;
+    sendBtn.disabled = true;
+    return false;
+  }
+  authToken = payload.token;
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* Разметка ответа: экранируем всё, затем размечаем ограниченный набор */
 /* конструкций Markdown. Никакого innerHTML из сырого текста модели.   */
 /* ------------------------------------------------------------------ */
@@ -558,7 +597,12 @@ function pill(label, state) {
 
 async function loadStatus() {
   try {
-    const status = await (await fetch("/api/status")).json();
+    const response = await fetch("/api/status");
+    if (response.status === 401 && !inTelegram) {
+      window.location.href = "/login";
+      return;
+    }
+    const status = await response.json();
     el("org-name").textContent = status.org;
     document.title = `Ассистент ${status.org}`;
     el("model-line").textContent = `${status.model} · ${status.timezone}`;
@@ -579,5 +623,151 @@ async function loadStatus() {
   }
 }
 
-loadStatus();
-input.focus();
+/* ------------------------------------------------------------------ */
+/* Модель и баланс                                                     */
+/* ------------------------------------------------------------------ */
+
+let catalog = [];
+let currency = "₽";
+let currentModel = "";
+
+const money = (value, digits = 2) =>
+  value === undefined || value === null
+    ? "—"
+    : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: Math.min(digits, 2) }).format(value)} ${currency}`;
+
+const price = (value) => (value === null || value === undefined ? "?" : money(value, value < 1 ? 4 : 2));
+
+function facts(target, rows) {
+  target.innerHTML = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
+    .join("");
+}
+
+function showView(view) {
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll(".view-chat").forEach((node) => node.classList.toggle("hidden", view !== "chat"));
+  el("settings").classList.toggle("hidden", view !== "settings");
+  if (view === "settings") loadSettings();
+}
+
+el("tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest(".tab");
+  if (tab) showView(tab.dataset.view);
+});
+
+function renderCurrent(model) {
+  const info = catalog.find((m) => m.id === currentModel) || model;
+  el("current-name").textContent = (info && info.name) || currentModel || "не выбрана";
+  el("current-id").textContent = currentModel;
+  facts(el("current-facts"), info ? [
+    ["Вход, 1 млн токенов", price(info.price_in)],
+    ["Выход, 1 млн токенов", price(info.price_out)],
+    ["Контекст", info.context_length ? `${new Intl.NumberFormat("ru-RU").format(info.context_length)} токенов` : null],
+  ] : []);
+}
+
+function renderModels() {
+  const query = el("model-search").value.trim().toLowerCase();
+  const sort = el("model-sort").value;
+  let list = catalog.filter((m) => !query || m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query));
+  if (sort === "price") {
+    const cost = (m) => (m.price_in ?? Infinity) + (m.price_out ?? Infinity);
+    list = [...list].sort((a, b) => cost(a) - cost(b));
+  }
+  el("model-list").innerHTML = list.slice(0, 200).map((m) => `
+    <li class="model-item${m.id === currentModel ? " selected" : ""}" data-id="${escapeHtml(m.id)}">
+      <span class="m-name">${escapeHtml(m.name)}${m.tools === null ? ' <span class="m-flag">инструменты не подтверждены</span>' : ""}</span>
+      <span class="m-price">${escapeHtml(price(m.price_in))}<br>${escapeHtml(price(m.price_out))}</span>
+      <span class="m-id">${escapeHtml(m.id)}</span>
+    </li>`).join("") || '<li class="card-note">Ничего не найдено.</li>';
+}
+
+el("model-search").addEventListener("input", renderModels);
+el("model-sort").addEventListener("change", renderModels);
+
+function ask(text) {
+  // Переключение модели меняет работу бота для всех — только после согласия.
+  if (tg && tg.showConfirm && inTelegram) return new Promise((resolve) => tg.showConfirm(text, resolve));
+  return Promise.resolve(window.confirm(text));
+}
+
+el("model-list").addEventListener("click", async (event) => {
+  const item = event.target.closest(".model-item");
+  if (!item || item.dataset.id === currentModel) return;
+  const model = catalog.find((m) => m.id === item.dataset.id);
+  const agreed = await ask(`Переключить ассистента на «${model ? model.name : item.dataset.id}»? Это действует и в чате бота.`);
+  if (!agreed) return;
+  const who = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : "веб";
+  const response = await fetch("/api/model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Operon-User": who },
+    body: JSON.stringify({ model: item.dataset.id }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    el("balance-note").textContent = payload.detail || `Не удалось переключить (HTTP ${response.status})`;
+    el("balance-note").classList.add("error");
+    return;
+  }
+  currentModel = payload.current.model;
+  renderCurrent();
+  renderModels();
+  loadStatus();
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+});
+
+async function loadSettings() {
+  const note = el("balance-note");
+  note.classList.remove("error");
+  note.textContent = "Загружаю…";
+  try {
+    const [billing, models] = await Promise.all([
+      fetch("/api/billing").then((r) => r.json()),
+      fetch("/api/models").then((r) => r.json()),
+    ]);
+    currentModel = (billing.current && billing.current.model) || "";
+    if (!billing.available) {
+      el("balance-value").textContent = "—";
+      note.textContent = "Баланс и каталог доступны при работе через RouterAI (ROUTERAI_API_KEY).";
+      renderCurrent();
+      return;
+    }
+    currency = billing.currency || currency;
+    el("balance-value").textContent = money(billing.balance);
+    facts(el("balance-facts"), [
+      ["Потрачено ключом всего", billing.key_usage !== undefined ? money(billing.key_usage) : null],
+      ["За месяц", billing.key_usage_monthly !== undefined ? money(billing.key_usage_monthly) : null],
+      ["За неделю", billing.key_usage_weekly !== undefined ? money(billing.key_usage_weekly) : null],
+      ["Сегодня", billing.key_usage_daily !== undefined ? money(billing.key_usage_daily) : null],
+      ["Лимит ключа", billing.key_limit !== undefined ? money(billing.key_limit) : null],
+    ]);
+    const problems = billing.errors || [];
+    note.textContent = billing.balance === undefined
+      ? `Шлюз не сообщил баланс. ${problems.join(" ")}`.trim()
+      : (billing.balance_source ? `Показан остаток по ${billing.balance_source}.` : "");
+    if (billing.balance === undefined) note.classList.add("error");
+
+    catalog = models.models || [];
+    if (!models.available) {
+      el("model-list").innerHTML = `<li class="card-note error">${escapeHtml(models.detail || "Каталог недоступен.")}</li>`;
+    } else {
+      renderModels();
+    }
+    renderCurrent(billing.model);
+  } catch (err) {
+    note.textContent = `Сбой соединения: ${err.message}`;
+    note.classList.add("error");
+  }
+}
+
+(async () => {
+  if (inTelegram && !(await telegramLogin())) return;
+  loadStatus();
+  if (!inTelegram) input.focus();
+})();
