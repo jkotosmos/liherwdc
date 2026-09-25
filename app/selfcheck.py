@@ -476,7 +476,7 @@ def check_billing() -> list[Check]:
                 "Баланс",
                 WARN,
                 "шлюз не сообщил баланс: " + "; ".join(data.get("errors") or ["нет данных"]),
-                ["Посмотрите сырые ответы: python -m app.routerai — и пришлите вывод."],
+                ["Сырые ответы шлюза: команда /routerai в боте (или python -m app.routerai) — пришлите их."],
             )
         )
     try:
@@ -595,12 +595,8 @@ def check_knowledge_base() -> list[Check]:
 MARK = {OK: "  OK  ", WARN: " ВНИМ ", FAIL: " СБОЙ ", SKIP: "  --  "}
 
 
-def main() -> int:
-    # Русская консоль Windows не примет «—» и оборвёт вывод на первой же строке.
-    marks = console.setup()
-    rule = marks["rule"]
-    arrow = marks["arrow"]
-
+def run_groups() -> list[tuple[str, list[Check]]]:
+    """Все проверки по группам. Упавшая проверка не лишает отчёта об остальных."""
     groups = [
         ("Настройки", check_settings),
         ("Модель", check_model),
@@ -610,16 +606,49 @@ def main() -> int:
         ("Интернет", check_search),
         ("База знаний", check_knowledge_base),
     ]
-
-    print("Проверка ассистента OPERON\n")
-    all_checks: list[Check] = []
-
+    results = []
     for title, runner in groups:
-        print(f"{rule} {title} " + "-" * (58 - len(title)))
         try:
             checks = runner()
         except Exception as exc:  # noqa: BLE001 — проверка не должна падать сама
             checks = [Check(title, FAIL, f"проверка сорвалась: {exc.__class__.__name__}: {exc}")]
+        results.append((title, checks))
+    return results
+
+
+TELEGRAM_MARK = {OK: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖"}
+
+
+def render_telegram(results: list[tuple[str, list[Check]]]) -> str:
+    """Отчёт для команды /check в боте: те же проверки, без компьютера."""
+    from .telegram.format import escape
+
+    lines = ["<b>Проверка ассистента</b>"]
+    for title, checks in results:
+        if not checks:
+            continue
+        lines.append(f"\n<b>{escape(title)}</b>")
+        for check in checks:
+            lines.append(f"{TELEGRAM_MARK.get(check.status, '•')} {escape(check.name)}: {escape(check.detail)}")
+            for hint in check.hints:
+                lines.append(f"    → {escape(hint)}")
+    failures = [c for _, checks in results for c in checks if c.status == FAIL]
+    lines.append("")
+    lines.append("Сбоев нет." if not failures else f"Сбоев: {len(failures)} — см. строки с ❌.")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    # Русская консоль Windows не примет «—» и оборвёт вывод на первой же строке.
+    marks = console.setup()
+    rule = marks["rule"]
+    arrow = marks["arrow"]
+
+    print("Проверка ассистента OPERON\n")
+    all_checks: list[Check] = []
+
+    for title, checks in run_groups():
+        print(f"{rule} {title} " + "-" * (58 - len(title)))
         for check in checks:
             print(f"[{MARK[check.status]}] {check.name}: {check.detail}")
             for hint in check.hints:

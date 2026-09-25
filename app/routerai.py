@@ -181,30 +181,36 @@ def reset_cache() -> None:
         _catalog = None
 
 
+def raw_report() -> str:
+    """Сырые ответы шлюза: как они выглядят на вашем ключе. Ключа в отчёте нет."""
+    if not available():
+        return "Задайте ROUTERAI_API_KEY (или OPENROUTER_API_KEY)."
+    parts = []
+    for path in ("/key", "/credits"):
+        parts.append(f"=== GET {path}")
+        try:
+            parts.append(json.dumps(_get(path), ensure_ascii=False, indent=2)[:1500])
+        except BillingError as exc:
+            parts.append(f"ошибка: {exc}")
+    parts.append("=== GET /models (первая модель)")
+    try:
+        data = _unwrap(_get("/models"))
+        sample = data[:1] if isinstance(data, list) else data
+        parts.append(json.dumps(sample, ensure_ascii=False, indent=2)[:2000])
+        parts.append(f"Всего моделей: {len(data) if isinstance(data, list) else '?'}")
+    except BillingError as exc:
+        parts.append(f"ошибка: {exc}")
+    parts.append("=== Как это увидит Mini App")
+    parts.append(json.dumps(billing(), ensure_ascii=False, indent=2))
+    return "\n".join(parts)
+
+
 def main() -> int:  # pragma: no cover — ручная диагностика
-    """Показывает сырые ответы шлюза: как они выглядят на вашем ключе."""
     from . import console
 
     console.setup()
-    if not available():
-        print("Задайте ROUTERAI_API_KEY (или OPENROUTER_API_KEY).")
-        return 1
-    for path in ("/key", "/credits"):
-        print(f"\n=== GET {path}")
-        try:
-            print(json.dumps(_get(path), ensure_ascii=False, indent=2)[:3000])
-        except BillingError as exc:
-            print(f"ошибка: {exc}")
-    print("\n=== GET /models (первые 2)")
-    try:
-        data = _unwrap(_get("/models"))
-        print(json.dumps(data[:2] if isinstance(data, list) else data, ensure_ascii=False, indent=2)[:4000])
-        print(f"\nВсего моделей: {len(data) if isinstance(data, list) else '?'}")
-    except BillingError as exc:
-        print(f"ошибка: {exc}")
-    print("\n=== Как это увидит Mini App")
-    print(json.dumps(billing(), ensure_ascii=False, indent=2))
-    return 0
+    print(raw_report())
+    return 0 if available() else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

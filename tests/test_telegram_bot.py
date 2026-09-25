@@ -776,3 +776,30 @@ class TestMiniAppEntry:
 
         api.set_chat_menu_button = broken
         bot._install_menu_button()  # не бросает
+
+
+class TestCheckCommand:
+    def test_check_reports_in_chat(self, monkeypatch) -> None:
+        from app import selfcheck
+        from app.selfcheck import Check, FAIL, OK
+
+        monkeypatch.setattr(selfcheck, "run_groups", lambda: [
+            ("Модель", [Check("Шлюз модели", OK, "отвечает")]),
+            ("Google", [Check("Google Sheets API", FAIL, "не включён", ["Включите <API>"])]),
+        ])
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(message("/check"))
+        report = api.texts()[-1]
+        assert "✅ Шлюз модели: отвечает" in report
+        assert "❌ Google Sheets API" in report
+        assert "&lt;API&gt;" in report, "подсказки экранируются для HTML Telegram"
+        assert "Сбоев: 1" in report
+
+    def test_routerai_raw_report(self, monkeypatch) -> None:
+        from app import routerai
+
+        monkeypatch.setattr(routerai, "raw_report", lambda: '=== GET /key\n{"usage": 1}')
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(message("/routerai"))
+        assert api.texts()[-1].startswith("<pre>")
+        assert "&quot;usage&quot;" in api.texts()[-1] or '"usage"' in api.texts()[-1]

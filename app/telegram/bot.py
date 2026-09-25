@@ -40,6 +40,7 @@ GREETING = (
     "/status — что подключено\n"
     "/auth — подключить Google (или переподключить)\n"
     "/app — приложение: выбор модели, баланс, чат\n"
+    "/check — проверить всё: модель, баланс, Google, поиск\n"
     "/help — подсказка"
 )
 
@@ -247,9 +248,17 @@ class TelegramBot:
             self._handle_auth(chat_id)
         elif command == "app":
             self._handle_app(chat_id)
+        elif command == "check":
+            self._handle_check(chat_id)
+        elif command == "routerai":
+            from .. import routerai
+
+            report = routerai.raw_report()
+            for part in split_message(report, limit=3500):
+                self._api.send_message(chat_id, f"<pre>{escape(part)}</pre>", parse_mode="HTML")
         else:
             self._api.send_message(
-                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /app, /help."
+                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /app, /check, /help."
             )
 
     # --- Mini App ---
@@ -268,6 +277,16 @@ class TelegramBot:
                 self._api.set_chat_menu_button(user_id, "Открыть", url)
             except Exception as exc:  # noqa: BLE001 — кнопка необязательна
                 logger.warning("Не удалось поставить кнопку Mini App для %s: %s", user_id, exc)
+
+    def _handle_check(self, chat_id: int) -> None:
+        """Самопроверка прямо в чате — когда под рукой нет компьютера."""
+        from .. import selfcheck
+
+        self._api.send_message(chat_id, "🔎 Проверяю модель, баланс, Google и поиск… до минуты.")
+        self._api.send_chat_action(chat_id)
+        report = selfcheck.render_telegram(selfcheck.run_groups())
+        for part in split_message(report):
+            self._api.send_message(chat_id, part, parse_mode="HTML")
 
     def _handle_app(self, chat_id: int) -> None:
         url = miniapp_url()
