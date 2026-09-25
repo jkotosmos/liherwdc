@@ -35,7 +35,7 @@ def main() -> int:
             f"{secret_path}\n\n"
             "Как получить:\n"
             "  1. console.cloud.google.com → создайте (или выберите) проект;\n"
-            "  2. включите Google Drive API и Google Calendar API;\n"
+            "  2. включите Google Drive API, Google Calendar API и Google Sheets API;\n"
             "  3. APIs & Services → Credentials → Create credentials → OAuth client ID;\n"
             "  4. тип приложения: Desktop app;\n"
             f"  5. скачайте JSON и сохраните как {secret_path}",

@@ -129,10 +129,33 @@ def _drive_search(tool_input: dict[str, Any]) -> Any:
 # --- чтение ----------------------------------------------------------------
 
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _spreadsheet_via_export(file_id: str) -> str:
+    """Все листы таблицы без Sheets API: выгрузка в .xlsx через Drive API.
+
+    Запасной путь на случай, когда Sheets API не включён в проекте Google
+    Cloud: иначе таблицы — половина рабочих данных — не читались бы вовсе.
+    """
+    data = _drive().files().export(fileId=file_id, mimeType=XLSX_MIME).execute()
+    try:
+        return extract_text(data, "file.xlsx")
+    except DocumentError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 def _read_spreadsheet(file_id: str, sheet_range: str | None) -> str:
     """Таблицы читаем через Sheets API — так доступны все листы, а не только первый."""
     sheets = get_service("sheets", "v4")
-    meta = sheets.spreadsheets().get(spreadsheetId=file_id, fields="sheets(properties(title))").execute()
+    try:
+        meta = sheets.spreadsheets().get(spreadsheetId=file_id, fields="sheets(properties(title))").execute()
+    except HttpError as exc:
+        if getattr(getattr(exc, "resp", None), "status", None) != 403:
+            raise
+        # 403 здесь почти всегда значит «Sheets API не включён»: права на файл
+        # уже подтвердил Drive, прочитав его метаданные.
+        return _spreadsheet_via_export(file_id)
     titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
 
     ranges = [sheet_range] if sheet_range else titles
@@ -204,7 +227,10 @@ def _drive_read(tool_input: dict[str, Any]) -> Any:
 
     mime_type = meta.get("mimeType", "")
     if mime_type == GOOGLE_SHEET:
-        text = _read_spreadsheet(file_id, tool_input.get("sheet_range"))
+        try:
+            text = _read_spreadsheet(file_id, tool_input.get("sheet_range"))
+        except HttpError as exc:
+            raise ToolError(describe_http_error(exc, "Чтение таблицы Google")) from exc
     else:
         try:
             text = _export_text(file_id, mime_type)

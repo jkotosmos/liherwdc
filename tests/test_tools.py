@@ -138,7 +138,7 @@ class TestGoogleDegradation:
     def test_tools_report_setup_instructions(self, tool: str, payload: dict) -> None:
         content, is_error = registry.execute(tool, payload)
         assert is_error
-        assert "google_auth" in content or "не установлены" in content
+        assert "/auth" in content or "не установлены" in content
 
     def test_status_helper_does_not_raise(self) -> None:
         from app.integrations import google_client

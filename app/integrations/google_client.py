@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from typing import Any
 
@@ -38,10 +39,9 @@ _lock = threading.Lock()
 _cached: Any = None
 
 SETUP_HINT = (
-    "Интеграция с Google не подключена. Чтобы включить её, выполните в каталоге проекта: "
-    "1) положите client_secret.json (OAuth client ID типа Desktop app) в credentials/; "
-    "2) запустите `python -m app.integrations.google_auth`; "
-    "3) подтвердите доступ в браузере под нужной учётной записью."
+    "Интеграция с Google не подключена. Владелец бота должен отправить боту /auth "
+    "и разрешить доступ под нужной учётной записью Google (нужны заданные "
+    "GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET)."
 )
 
 
@@ -121,6 +121,9 @@ def describe_http_error(exc: Any, context: str) -> str:
             detail = payload.get("error", {}).get("message", "")
         except (ValueError, AttributeError):
             detail = ""
+    disabled = api_disabled_message(detail)
+    if disabled:
+        return f"{context}: {disabled}"
     if status == 401:
         return f"{context}: Google отклонил токен (401). Требуется повторная авторизация. {detail}"
     if status == 403:
@@ -131,6 +134,33 @@ def describe_http_error(exc: Any, context: str) -> str:
     if status == 404:
         return f"{context}: объект не найден (404) или недоступен этой учётной записи. {detail}"
     return f"{context}: ошибка Google API {status or ''}. {detail or exc}".strip()
+
+
+_ACTIVATION_URL = re.compile(r"https://console\.(?:developers|cloud)\.google\.com/\S+")
+_API_NAME = re.compile(r"([A-Za-z ]+ API) has not been used|([a-z]+)\.googleapis\.com")
+
+
+def api_disabled_message(detail: str) -> str:
+    """Отказ «API не включён в проекте» — самая частая ошибка первого запуска.
+
+    Google отвечает на него 403, и без этой проверки человек видит «нет прав»
+    и идёт перевыдавать доступ, хотя нужно нажать «Enable» в консоли.
+    """
+    text = detail or ""
+    if "has not been used in project" not in text and "it is disabled" not in text:
+        return ""
+    name_match = _API_NAME.search(text)
+    name = ""
+    if name_match:
+        name = name_match.group(1) or f"{name_match.group(2)}.googleapis.com"
+    url_match = _ACTIVATION_URL.search(text)
+    url = url_match.group(0).rstrip(".,)") if url_match else ""
+    return (
+        f"в проекте Google Cloud не включён {name or 'нужный API'}. "
+        "Это настройка проекта, а не прав пользователя: включите API в консоли"
+        + (f" ({url})" if url else " (APIs & Services → Library)")
+        + ", подождите пару минут и повторите. Повторная авторизация не нужна."
+    )
 
 
 def status() -> dict[str, Any]:
@@ -161,9 +191,10 @@ def status() -> dict[str, Any]:
 
 
 def _account_email() -> str:
+    # Адрес берём у Диска: userinfo требует отдельного разрешения (email),
+    # которого в наборе нет, и раньше этот запрос молча возвращал пустоту.
     try:
-        service = get_service("oauth2", "v2")
-        info = service.userinfo().get().execute()
-        return info.get("email", "")
+        about = get_service("drive", "v3").about().get(fields="user(emailAddress)").execute()
+        return (about.get("user") or {}).get("emailAddress", "")
     except Exception:  # noqa: BLE001 — необязательная информация
         return ""

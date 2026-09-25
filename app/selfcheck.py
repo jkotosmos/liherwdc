@@ -332,26 +332,122 @@ def check_google() -> list[Check]:
         Check("Google: доступ выдан", OK, status.get("account_hint") or "учётная запись определена")
     )
 
-    # Живые запросы: выданный токен ещё не значит, что права те, что нужны.
+    checks.extend(_google_live_checks())
+    return checks
+
+
+SCOPE_PURPOSE = {
+    "https://www.googleapis.com/auth/drive.readonly": "чтение Диска (документы, таблицы, презентации)",
+    "https://www.googleapis.com/auth/drive.file": "создание файлов на Диске (протоколы, КП)",
+    "https://www.googleapis.com/auth/calendar.events": "календарь: чтение и создание событий",
+    "https://www.googleapis.com/auth/calendar.readonly": "календарь: только чтение",
+}
+
+
+def _granted_scopes() -> set[str] | None:
+    """Разрешения, которые Google выдал на самом деле, — по tokeninfo.
+
+    Список в самом токене показывает, что запрашивали, а не что выдали: на
+    экране согласия галочку можно снять, и тогда запись молча не работает.
+    """
+    from .integrations import google_client
+
     try:
-        from .tools import registry
-
-        content, is_error = registry.execute("drive_search", {"query": "", "max_results": 1})
-        checks.append(
-            Check("Google Drive: чтение", FAIL if is_error else OK, content[:120] if is_error else "запрос прошёл")
+        creds = google_client._load_credentials()
+        response = httpx.get(
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"access_token": creds.token},
+            timeout=15,
         )
-    except Exception as exc:  # noqa: BLE001
-        checks.append(Check("Google Drive: чтение", FAIL, f"{exc.__class__.__name__}: {exc}"))
+        if response.status_code != 200:
+            return None
+        return set((response.json().get("scope") or "").split())
+    except Exception:  # noqa: BLE001 — проверка вспомогательная
+        return None
 
+
+def _google_live_checks() -> list[Check]:
+    """Живые запросы: выданный токен ещё не значит, что права те, что нужны."""
+    from .integrations import google_client
+    from .tools import registry
+
+    checks: list[Check] = []
+
+    granted = _granted_scopes()
+    if granted is not None:
+        missing = [scope for scope in settings.google_scopes if scope not in granted]
+        if missing:
+            checks.append(
+                Check(
+                    "Google: разрешения",
+                    FAIL,
+                    "не выданы: " + "; ".join(SCOPE_PURPOSE.get(m, m) for m in missing),
+                    [
+                        "На экране согласия Google сняли галочку, либо токен выдан "
+                        "под старый набор разрешений.",
+                        "Отправьте боту /auth и на экране согласия отметьте ВСЕ пункты.",
+                    ],
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "Google: разрешения",
+                    OK,
+                    "; ".join(SCOPE_PURPOSE.get(s, s) for s in settings.google_scopes),
+                )
+            )
+
+    for name, tool, tool_input, api in (
+        ("Google Drive: чтение", "drive_search", {"query": "", "max_results": 1}, "Google Drive API"),
+        ("Google Calendar: чтение", "calendar_list_events", {"max_results": 1}, "Google Calendar API"),
+    ):
+        try:
+            content, is_error = registry.execute(tool, tool_input)
+        except Exception as exc:  # noqa: BLE001
+            content, is_error = f"{exc.__class__.__name__}: {exc}", True
+        if not is_error:
+            checks.append(Check(name, OK, "запрос прошёл"))
+            continue
+        hints = []
+        if "не включён" in content:
+            hints.append(
+                f"Google Cloud Console → APIs & Services → Library → {api} → Enable."
+            )
+        checks.append(Check(name, FAIL, content[:300], hints))
+
+    # Sheets API: несуществующая таблица даёт 404, если API включён, и 403
+    # «has not been used», если нет. Так проверяем, не зная ни одного файла.
     try:
-        from .tools import registry
+        from googleapiclient.errors import HttpError
 
-        content, is_error = registry.execute("calendar_list_events", {"max_results": 1})
-        checks.append(
-            Check("Google Calendar: чтение", FAIL if is_error else OK, content[:120] if is_error else "запрос прошёл")
-        )
+        try:
+            google_client.get_service("sheets", "v4").spreadsheets().get(
+                spreadsheetId="operon-selfcheck-missing", fields="spreadsheetId"
+            ).execute()
+            checks.append(Check("Google Sheets API", OK, "включён"))
+        except HttpError as exc:
+            status_code = getattr(getattr(exc, "resp", None), "status", None)
+            text = google_client.describe_http_error(exc, "Sheets API")
+            if status_code in (400, 404):
+                checks.append(Check("Google Sheets API", OK, "включён"))
+            elif "не включён" in text:
+                checks.append(
+                    Check(
+                        "Google Sheets API",
+                        WARN,
+                        "не включён — таблицы читаются запасным путём, целиком",
+                        [
+                            "Google Cloud Console → APIs & Services → Library → "
+                            "Google Sheets API → Enable. Тогда можно читать "
+                            "отдельный лист или диапазон.",
+                        ],
+                    )
+                )
+            else:
+                checks.append(Check("Google Sheets API", WARN, text[:200]))
     except Exception as exc:  # noqa: BLE001
-        checks.append(Check("Google Calendar: чтение", FAIL, f"{exc.__class__.__name__}: {exc}"))
+        checks.append(Check("Google Sheets API", WARN, f"{exc.__class__.__name__}: {exc}"[:200]))
 
     return checks
 
