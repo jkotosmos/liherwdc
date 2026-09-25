@@ -107,8 +107,26 @@ class TestSearchResults:
             return httpx.Response(401, json={}, request=request)
 
         monkeypatch.setattr(web.httpx, "post", fake_post)
+        monkeypatch.setattr(web.free_search, "search", lambda q, n: ([], ["DuckDuckGo: нет связи"]))
         with pytest.raises(ToolError, match="401"):
             web._internet_search({"query": "тест"})
+
+    def test_paid_limit_exhausted_falls_back_to_free(self, monkeypatch) -> None:
+        """Кончился бесплатный лимит Tavily — интернет не пропадает."""
+        monkeypatch.setenv("TAVILY_API_KEY", "k")
+
+        def fake_post(url, **kwargs):
+            return httpx.Response(432, json={"detail": {"error": "plan limit exceeded"}},
+                                  request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(web.httpx, "post", fake_post)
+        monkeypatch.setattr(web.free_search, "search", lambda q, n: ([
+            {"title": "t", "url": "https://a.test", "snippet": "s", "published": "", "engine": "DuckDuckGo"}
+        ], []))
+        result = web._internet_search({"query": "рынок"})
+        assert result["status"] == "ok"
+        assert result["provider"] == "free"
+        assert "tavily" in result["sources_failed"][0]
 
     def test_result_limit_is_bounded(self, monkeypatch) -> None:
         captured = {}

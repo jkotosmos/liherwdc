@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import datetime
@@ -21,6 +22,8 @@ from ..config import settings
 from ..search_keys import damaged_keys
 from . import free_search
 from .base import ToolError, ToolSpec, registry
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 MAX_PAGE_CHARS = 40_000
@@ -221,10 +224,21 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
             results = PROVIDERS[provider](query, limit)
     except KeyError as exc:
         raise ToolError(f"Для провайдера «{provider}» не задан ключ: {exc}") from exc
-    except httpx.HTTPStatusError as exc:
-        raise ToolError(_describe_search_error(provider, exc)) from exc
-    except httpx.HTTPError as exc:
-        raise ToolError(f"Не удалось обратиться к поисковому сервису {provider}: {exc}") from exc
+    except (httpx.HTTPStatusError, httpx.HTTPError) as exc:
+        # Кончился бесплатный лимит платного API или он недоступен — ищем
+        # бесплатно, а не оставляем пользователя без интернета.
+        reason = (
+            _describe_search_error(provider, exc)
+            if isinstance(exc, httpx.HTTPStatusError)
+            else f"Не удалось обратиться к поисковому сервису {provider}: {exc}"
+        )
+        logger.warning("%s — переключаюсь на бесплатный поиск", reason)
+        try:
+            results, failures = _free(query, limit)
+        except ToolError as free_exc:
+            raise ToolError(f"{reason} Запасной бесплатный поиск тоже не ответил: {free_exc}") from exc
+        failures = [reason, *failures]
+        provider = "free"
 
     retrieved = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M")
     if not results:
