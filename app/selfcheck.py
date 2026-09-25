@@ -529,7 +529,11 @@ def check_search() -> list[Check]:
     content, is_error = registry.execute("internet_search", {"query": "ставка ЦБ РФ"})
     if is_error:
         hints = []
-        if "google" in content:
+        if "Бесплатный интернет-поиск" in content:
+            hints.append("Сеть сервера не достучалась ни до одного бесплатного источника. "
+                         "Повторите /check позже; при постоянном сбое можно задать TAVILY_API_KEY "
+                         "(бесплатный тариф).")
+        if "сервис google" in content:
             hints.append(GOOGLE_CSE_SHUTDOWN)
         return [Check("Интернет-поиск", FAIL, content[:150], hints)]
 
@@ -540,13 +544,13 @@ def check_search() -> list[Check]:
             Check(
                 "Интернет-поиск",
                 WARN,
-                "ключ поиска не задан",
+                "выключен (OPERON_SEARCH_PROVIDER=none)",
                 [
                     "Ассистент честно скажет «интернет недоступен» и ответит "
                     "только по внутренним данным — но пункт ТЗ про внешние "
                     "источники работать не будет.",
-                    "Проще всего Tavily: tavily.com → API Keys → TAVILY_API_KEY. "
-                    "Подойдут и BRAVE_API_KEY или SERPER_API_KEY.",
+                    "Уберите OPERON_SEARCH_PROVIDER — включится бесплатный поиск "
+                    "без ключей (DuckDuckGo, Bing, Google News, Википедия).",
                 ],
             )
         ]
@@ -555,6 +559,13 @@ def check_search() -> list[Check]:
         found = f"{provider}: найдено {payload.get('results_count', len(payload.get('results', [])))}"
         if provider == "google":
             return [Check("Интернет-поиск", WARN, found, [GOOGLE_CSE_SHUTDOWN])]
+        if provider == "free":
+            engines = sorted({r.get("engine", "?") for r in payload.get("results", [])})
+            failed = payload.get("sources_failed") or []
+            detail = f"бесплатный, без ключей: найдено {len(payload.get('results', []))} ({', '.join(engines)})"
+            if failed:
+                return [Check("Интернет-поиск", OK, detail, ["Не ответили (есть замена): " + "; ".join(failed)])]
+            return [Check("Интернет-поиск", OK, detail)]
         return [Check("Интернет-поиск", OK, found)]
     return [Check("Интернет-поиск", WARN, str(payload.get("hint", status))[:150])]
 

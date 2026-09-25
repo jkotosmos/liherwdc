@@ -16,6 +16,9 @@ os.environ.setdefault("OPERON_DATA_DIR", str(_TMP / "data"))
 os.environ.setdefault("OPERON_CREDENTIALS_DIR", str(_TMP / "credentials"))
 os.environ.setdefault("OPERON_KB_DIR", str(_TMP / "kb"))
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-used")
+# Тесты не ходят в интернет: бесплатный поиск включается только там, где
+# его источники подменены заглушками.
+os.environ.setdefault("OPERON_SEARCH_PROVIDER", "none")
 
 (_TMP / "kb").mkdir(parents=True, exist_ok=True)
 

@@ -19,7 +19,13 @@ def clean_search_env(monkeypatch):
 
 
 class TestProviderDetection:
-    def test_no_keys_means_not_configured(self) -> None:
+    def test_no_keys_means_free_search(self) -> None:
+        """Без ключей интернет не выключается: работает бесплатный поиск."""
+        assert web._search_provider() == "free"
+        assert web.search_is_configured() is True
+
+    def test_internet_can_be_switched_off(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_SEARCH_PROVIDER", "none")
         assert web.search_is_configured() is False
 
     @pytest.mark.parametrize(
@@ -43,8 +49,9 @@ class TestProviderDetection:
 
 
 class TestDegradation:
-    def test_without_key_tells_model_not_to_invent(self) -> None:
+    def test_switched_off_tells_model_not_to_invent(self, monkeypatch) -> None:
         """Ключевое требование ТЗ: нет данных — не выдумывать."""
+        monkeypatch.setenv("OPERON_SEARCH_PROVIDER", "none")
         result = web._internet_search({"query": "рынок СЭД 2026"})
         assert result["status"] == "not_configured"
         assert "не выдумывай" in result["hint"].lower()

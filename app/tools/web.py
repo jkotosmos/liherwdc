@@ -19,23 +19,27 @@ import httpx
 
 from ..config import settings
 from ..search_keys import damaged_keys
+from . import free_search
 from .base import ToolError, ToolSpec, registry
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 MAX_PAGE_CHARS = 40_000
 
 NOT_CONFIGURED = (
-    "Интернет-поиск не настроен: нет ключа поискового API. Сообщи пользователю, "
+    "Интернет-поиск выключен. Сообщи пользователю, "
     "что внешние данные сейчас недоступны, и отвечай только по внутренним "
     "источникам. Не выдумывай рыночные данные и не ссылайся на память. "
-    "Чтобы включить поиск, задайте TAVILY_API_KEY (или BRAVE_API_KEY, "
-    "SERPER_API_KEY)."
+    "Интернет выключен настройкой OPERON_SEARCH_PROVIDER=none."
 )
 
 def _search_provider() -> str:
+    """Поставщик поиска. Без ключей — бесплатный поиск по открытым страницам.
+
+    OPERON_SEARCH_PROVIDER=none выключает интернет совсем.
+    """
     explicit = (os.getenv("OPERON_SEARCH_PROVIDER") or "").strip().lower()
     if explicit:
-        return explicit
+        return "" if explicit in {"none", "off", "нет"} else explicit
     if os.getenv("TAVILY_API_KEY"):
         return "tavily"
     if os.getenv("BRAVE_API_KEY"):
@@ -44,7 +48,7 @@ def _search_provider() -> str:
         return "serper"
     if os.getenv("GOOGLE_CSE_KEY") and os.getenv("GOOGLE_CSE_ID"):
         return "google"
-    return ""
+    return "free"
 
 
 def search_is_configured() -> bool:
@@ -134,7 +138,21 @@ def _google_cse(query: str, limit: int) -> list[dict[str, str]]:
     ]
 
 
-PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "google": _google_cse}
+def _free(query: str, limit: int) -> tuple[list[dict[str, str]], list[str]]:
+    """Бесплатный поиск. Отдаёт и отказы источников: их видно в /check."""
+    results, failures = free_search.search(query, limit)
+    if not results and failures:
+        raise ToolError(
+            "Бесплатный интернет-поиск сейчас недоступен (" + "; ".join(failures) + "). "
+            "Скажи пользователю, что внешние данные получить не удалось, и не заменяй "
+            "их догадкой. Можно открыть известный адрес через open_url."
+        )
+    return [
+        _normalize(item["title"], item["url"], item["snippet"], item["published"]) | {"engine": item["engine"]}
+        for item in results
+    ], failures
+
+PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "google": _google_cse, "free": _free}
 
 
 def _describe_search_error(provider: str, exc: httpx.HTTPStatusError) -> str:
@@ -184,7 +202,7 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
     if provider not in PROVIDERS:
         raise ToolError(f"Неизвестный поисковый провайдер «{provider}». Доступно: {sorted(PROVIDERS)}")
 
-    damaged = damaged_keys()
+    damaged = damaged_keys() if provider != "free" else []
     if damaged:
         # Запрос с побитым ключом всё равно вернёт «ключ неверный» — честнее
         # сразу назвать настоящую причину, её поймёт и пользователь в чате.
@@ -195,8 +213,12 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
         )
 
     limit = min(max(int(tool_input.get("max_results") or 6), 1), 15)
+    failures: list[str] = []
     try:
-        results = PROVIDERS[provider](query, limit)
+        if provider == "free":
+            results, failures = _free(query, limit)
+        else:
+            results = PROVIDERS[provider](query, limit)
     except KeyError as exc:
         raise ToolError(f"Для провайдера «{provider}» не задан ключ: {exc}") from exc
     except httpx.HTTPStatusError as exc:
@@ -219,6 +241,7 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
         "query": query,
         "retrieved_at": retrieved,
         "results_count": len(results),
+        **({"sources_failed": failures} if failures else {}),
         "note": (
             "Это ВНЕШНИЕ данные. В ответе указывай название источника, ссылку и дату "
             f"получения ({retrieved}); не смешивай их с внутренними данными OPERON."
@@ -241,7 +264,9 @@ def _open_url(tool_input: dict[str, Any]) -> Any:
             url,
             timeout=TIMEOUT,
             follow_redirects=True,
-            headers={"User-Agent": f"OperonAssistant/1.0 (+{settings.public_url or 'local'})"},
+            # Браузерный заголовок: многие сайты (госорганы, СМИ) отдают
+            # пустую страницу или 403 «ботам» с нестандартным User-Agent.
+            headers=free_search.HEADERS,
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:

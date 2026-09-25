@@ -346,8 +346,14 @@ def main() -> int:
     if "internet_search" in registry.names():
         result = call(registry, "internet_search", {"query": "ставка ЦБ"})
         if result.get("status") == "not_configured":
-            say(True, "Без ключа поиска агент честно сообщает о недоступности",
+            say(True, "Без интернета агент честно сообщает о недоступности",
                 "и отвечает только по внутренним данным")
+        elif result.get("status") == "error":
+            # Бесплатные источники могут не отвечать из этой сети — важно,
+            # что агент называет отказ, а не придумывает результат.
+            say("не заменяй" in result.get("error", "") or "недоступен" in result.get("error", ""),
+                "Недоступный интернет назван прямо, без догадок",
+                result.get("error", "")[:90])
         else:
             say(result.get("status") == "ok", "Интернет-поиск работает",
                 f"источник: {result.get('provider')}")
