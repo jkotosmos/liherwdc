@@ -115,6 +115,10 @@ JSON, переименовать в `client_secret.json` и положить в 
 | Serper | [serper.dev](https://serper.dev/) → регистрация → Dashboard | `SERPER_API_KEY` |
 | Google CSE | [console.cloud.google.com](https://console.cloud.google.com/) (ключ) + [programmablesearchengine.google.com](https://programmablesearchengine.google.com/) (движок) | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_ID` |
 
+> **Google CSE не подходит для нового проекта.** Custom Search JSON API закрыт
+> для новых клиентов, а 1 января 2027 года Google отключает его совсем.
+> Берите Tavily.
+
 У всех четырёх есть бесплатный уровень, но лимиты и условия меняются —
 смотрите актуальные на сайте поставщика. Tavily сделан под задачи агентов:
 возвращает готовые выдержки, а не список ссылок.
