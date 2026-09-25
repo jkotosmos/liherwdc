@@ -326,7 +326,7 @@ class TelegramBot:
             return
 
         try:
-            path = intake.save(prepared)
+            intake.save(prepared)
         except intake.IntakeError as exc:
             self._api.answer_callback_query(callback["id"], "Ошибка")
             self._api.send_message(chat_id, "❌ " + escape(str(exc)))

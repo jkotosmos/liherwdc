@@ -201,11 +201,16 @@ Amvera даёт git-репозиторий проекта. Из каталога
 
 ```bash
 git remote add amvera https://git.amvera.ru/<логин>/<проект>
-git push amvera claude/operon-ai-agent-06p9uw:master
+git push amvera HEAD:master
 ```
 
-Сборка стартует автоматически. Следите за ней во вкладке **Сборка**;
-после успеха приложение поднимется на `https://<проект>.amvera.io`.
+`HEAD` — ветка, которая сейчас выгружена у вас; Amvera собирает `master`.
+Сборка стартует автоматически. Следите за ней во вкладке **Сборка**.
+
+Публичный адрес не появляется сам: проект → **Настройки** → **Доменные
+имена** → «Добавить доменное имя» → «Бесплатный домен Амвера». Точный адрес
+(`…amvera.io`) скопируйте оттуда и впишите в `OPERON_PUBLIC_URL`, а для
+Web-клиента Google — и в Authorized redirect URIs (с `/oauth2/callback`).
 
 ## Запуск на своей машине
 
@@ -325,8 +330,10 @@ Testing**, иначе выданные согласия протухают че�
 ### В Google Cloud Console
 
 1. Создайте проект, включите **Google Drive API** и **Google Calendar API**.
-2. *APIs & Services → Credentials → Create credentials → OAuth client ID*,
-   тип **Desktop app**. Скачайте JSON в `credentials/client_secret.json`.
+2. *APIs & Services → Credentials → Create credentials → OAuth client ID* —
+   тип **Web application** или **Desktop app** (выбор и последствия — в
+   разделе «Где именно брать каждый ключ», п. 5). Client ID и secret — в
+   переменные `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 3. *OAuth consent screen* → **Publish app** (статус станет *In production*).
    **На верификацию не подавайте** — она нужна только для публичных
    приложений со многими пользователями.
@@ -357,8 +364,10 @@ Testing**, иначе выданные согласия протухают че�
 
 ### Авторизация: команда /auth в боте (основной способ)
 
-Переносить файлы руками не нужно. На сервер достаточно положить
-`client_secret.json` (в `/data/credentials/`) — дальше всё делается в чате:
+Переносить файлы руками не нужно: достаточно задать клиент Google
+(переменные или `client_secret.json` в `/data/credentials/`) — дальше всё
+делается в чате. Для **Web**-клиента после согласия код придёт на сервер
+сам (шаги 3–4 не нужны). Для **Desktop**-клиента:
 
 1. отправьте боту `/auth`;
 2. откройте присланную ссылку и разрешите доступ той учётной записи,
@@ -446,7 +455,7 @@ TELEGRAM_ALLOWED_USERS   <ваш ID; несколько — через запя�
 ## Обновление
 
 ```bash
-git push amvera claude/operon-ai-agent-06p9uw:master
+git push amvera HEAD:master
 ```
 
 Данные на `/data` не затрагиваются. История диалогов хранится в памяти
@@ -457,9 +466,10 @@ git push amvera claude/operon-ai-agent-06p9uw:master
 | Симптом | Причина |
 |---|---|
 | «Отказ в запуске: … пароль не задан» | не задан `OPERON_ACCESS_PASSWORD` |
-| «Не задан ключ доступа к модели» | нет `OPENROUTER_API_KEY` в переменных окружения |
+| «Не задан ключ доступа к модели» | нет `ROUTERAI_API_KEY` (или ключа другого шлюза) в переменных окружения |
 | 404 от шлюза | неверный адрес или имя модели — запустите `python -m app.probe` |
 | 401/403 от шлюза | ключ не принят или модель вне вашей подписки |
 | Агент не вызывает инструменты | шлюз не поддерживает tool calling — проверьте `python -m app.probe` |
 | «База знаний пуста» | документы не загружены на `/data/knowledge_base` |
-| Google не подключён | нет `/data/credentials/google_token.json` |
+| Google не подключён | нет токена в `/data/credentials/` — отправьте боту `/auth` |
+| Сайт не открывается, хотя сборка успешна | не добавлено доменное имя: «Настройки» → «Доменные имена» → «Бесплатный домен Амвера» |

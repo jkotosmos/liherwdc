@@ -181,7 +181,6 @@ def main() -> int:
 
     from dataclasses import replace
 
-    from . import agent as agent_module
     from . import reminders as reminders_module
     from .agent import OperonAgent, Session
     from .config import settings
@@ -287,7 +286,7 @@ def main() -> int:
                     "due_date": (date.today() - timedelta(days=5)).isoformat()}}],
         "зафиксируй поручение",
     )
-    approved = list(
+    list(
         agent.resume_with_decisions(session2, {"t1": "approve"}, {})
     )
     tasks = call(registry, "tasks_list", {})

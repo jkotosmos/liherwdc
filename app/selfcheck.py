@@ -15,7 +15,6 @@ Google, интернет-поиск и база знаний.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from typing import Any
 
