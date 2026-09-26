@@ -239,6 +239,14 @@ Web-клиента Google — и в Authorized redirect URIs (с `/oauth2/callba
 
 ### Windows (PowerShell)
 
+**Одной командой** — обновить код, поставить зависимости, проверить и запустить:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
+```
+
+Или по шагам:
+
 Внутри venv на Windows Python лежит в `Scripts`, а не в `bin`. И `&&` не
 работает в PowerShell 5 — команды вводятся по одной:
 
