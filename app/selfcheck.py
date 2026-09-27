@@ -484,10 +484,11 @@ def check_billing() -> list[Check]:
                 Check(
                     "Баланс",
                     FAIL,
-                    detail + " — средства или лимит ключа исчерпаны",
+                    detail + (" — лимит ключа исчерпан" if data.get("balance_source") else " — средства исчерпаны"),
                     [
-                        "Пополните баланс в кабинете RouterAI; если у ключа задан "
-                        "лимит расхода — поднимите или снимите его.",
+                        "Поднимите или снимите лимит расхода у ключа в кабинете RouterAI."
+                        if data.get("balance_source")
+                        else "Пополните баланс в кабинете RouterAI.",
                         *hints,
                     ],
                 )
@@ -495,12 +496,15 @@ def check_billing() -> list[Check]:
         else:
             checks.append(Check("Баланс", OK, detail, hints))
     else:
+        spent = data.get("key_usage")
+        usage = f"; расход по ключу: {spent:.2f} {unit}" if spent is not None else ""
         checks.append(
             Check(
                 "Баланс",
-                WARN,
-                "шлюз не сообщил баланс: " + "; ".join(errors or ["нет данных"]),
-                ["Сырые ответы шлюза: команда /routerai в боте (или python -m app.routerai) — пришлите их."],
+                WARN if errors else OK,
+                "шлюз не сообщил остаток" + usage,
+                [f"Не ответило: {e}" for e in errors]
+                + (["Сырые ответы шлюза: команда /routerai в боте (или python -m app.routerai)."] if errors else []),
             )
         )
     try:

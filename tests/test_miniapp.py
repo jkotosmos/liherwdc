@@ -164,6 +164,28 @@ class TestBilling:
         assert data["balance_source"] == "лимит ключа"
         assert data["errors"]
 
+    def test_key_without_limit_is_not_a_balance(self, gateway, monkeypatch) -> None:
+        """Случай с машины заказчика: лимит не задан, «остаток» = −расход = −0.02."""
+        def fake_get(path, client=None):
+            if path == "/credits":
+                raise routerai.BillingError("Шлюз ответил 403 на /credits.")
+            return {"usage": 0.02, "limit": 0, "limit_remaining": -0.02, "usage_monthly": 0.02}
+
+        monkeypatch.setattr(routerai, "_get", fake_get)
+        data = routerai.billing()
+        assert "balance" not in data, "минус потраченного — не баланс"
+        assert "key_limit" not in data and "key_limit_remaining" not in data
+        assert data["key_usage"] == pytest.approx(0.02)
+
+    def test_key_with_null_limit_is_not_a_balance(self, gateway, monkeypatch) -> None:
+        def fake_get(path, client=None):
+            if path == "/credits":
+                raise routerai.BillingError("нет")
+            return {"data": {"usage": 5, "limit": None, "limit_remaining": -5}}
+
+        monkeypatch.setattr(routerai, "_get", fake_get)
+        assert "balance" not in routerai.billing()
+
     def test_real_http_shape(self, monkeypatch) -> None:
         conf = replace(settings, provider="routerai", api_key="k", base_url="https://routerai.test/api/v1")
         monkeypatch.setattr(routerai, "settings", conf)

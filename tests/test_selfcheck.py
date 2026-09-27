@@ -281,16 +281,27 @@ class TestBillingCheck:
         monkeypatch.setattr(routerai, "list_models", lambda: [{"id": "a", "tools": True}])
         return {c.name: c for c in selfcheck.check_billing()}
 
-    def test_negative_balance_is_a_failure(self, monkeypatch) -> None:
-        """Ровно случай из самопроверки: «-0.02 ₽ (лимит ключа)» было OK."""
+    def test_exhausted_key_limit_is_a_failure(self, monkeypatch) -> None:
+        """Заданный лимит ключа выбран — это сбой (routerai даёт остаток лишь при лимите > 0)."""
         checks = self._run(monkeypatch, {
             "currency": "₽", "balance": -0.02, "balance_source": "лимит ключа",
             "errors": ["Шлюз ответил 403 на /credits."],
         })
         assert checks["Баланс"].status == FAIL
-        assert "исчерпаны" in checks["Баланс"].detail
-        assert any("Пополните" in h for h in checks["Баланс"].hints)
+        assert "лимит ключа исчерпан" in checks["Баланс"].detail
+        assert any("лимит" in h for h in checks["Баланс"].hints)
         assert any("/credits" in h for h in checks["Баланс"].hints)
+
+    def test_empty_account_is_a_failure(self, monkeypatch) -> None:
+        checks = self._run(monkeypatch, {"currency": "₽", "balance": 0.0, "errors": []})
+        assert checks["Баланс"].status == FAIL
+        assert any("Пополните" in h for h in checks["Баланс"].hints)
+
+    def test_unknown_balance_with_usage_is_not_alarming(self, monkeypatch) -> None:
+        """Баланс в порядке, шлюз его просто не сообщил — это не сбой."""
+        checks = self._run(monkeypatch, {"currency": "₽", "key_usage": 0.02, "errors": []})
+        assert checks["Баланс"].status == OK
+        assert "0.02" in checks["Баланс"].detail
 
     def test_positive_balance_ok(self, monkeypatch) -> None:
         checks = self._run(monkeypatch, {"currency": "₽", "balance": 150.0, "errors": []})

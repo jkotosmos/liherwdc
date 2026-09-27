@@ -160,12 +160,22 @@ def billing(client: httpx.Client | None = None) -> dict[str, Any]:
     try:
         key = _unwrap(_get("/key", client))
         if isinstance(key, dict):
-            for field in ("usage", "usage_daily", "usage_weekly", "usage_monthly", "limit", "limit_remaining"):
+            for field in ("usage", "usage_daily", "usage_weekly", "usage_monthly"):
                 value = _number(key.get(field))
                 if value is not None:
                     result[f"key_{field}"] = value
-            if key.get("limit_reset"):
-                result["key_limit_reset"] = str(key["limit_reset"])
+            # Остаток лимита имеет смысл, только если лимит у ключа задан.
+            # Без лимита RouterAI отдаёт limit=0 (или null) и «остаток» =
+            # 0 − расход, то есть минус потраченное: −0,02 ₽ при исправном
+            # балансе. Такое число за баланс выдавать нельзя.
+            limit = _number(key.get("limit"))
+            if limit is not None and limit > 0:
+                result["key_limit"] = limit
+                remaining = _number(key.get("limit_remaining"))
+                if remaining is not None:
+                    result["key_limit_remaining"] = remaining
+                if key.get("limit_reset"):
+                    result["key_limit_reset"] = str(key["limit_reset"])
     except BillingError as exc:
         result["errors"].append(str(exc))
 
