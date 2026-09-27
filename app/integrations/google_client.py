@@ -14,11 +14,14 @@ from typing import Any
 
 from ..config import settings
 from ..errors import IntegrationUnavailable
+from ..net import configure_requests_session, httplib2_http
 from . import token_store
 
 try:  # Google-библиотеки опциональны: без них агент запускается, но интеграции выключены.
     from google.auth.transport.requests import AuthorizedSession, Request
     from google.oauth2.credentials import Credentials
+    import google_auth_httplib2
+    import requests
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
 
@@ -78,7 +81,7 @@ def _load_credentials() -> Any:
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 try:
-                    creds.refresh(Request())
+                    creds.refresh(Request(session=configure_requests_session(requests.Session())))
                     token_store.save_token(creds.to_json())
                 except Exception as exc:  # noqa: BLE001
                     raise IntegrationUnavailable(
@@ -103,11 +106,14 @@ def reset_cache() -> None:
 
 def get_service(api: str, version: str) -> Any:
     creds = _load_credentials()
-    return build(api, version, credentials=creds, cache_discovery=False)
+    # Свой httplib2: сертификаты хранилища системы и настройка OPERON_PROXY,
+    # как у остальных запросов бота.
+    http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2_http())
+    return build(api, version, http=http, cache_discovery=False)
 
 
 def authorized_session() -> Any:
-    return AuthorizedSession(_load_credentials())
+    return configure_requests_session(AuthorizedSession(_load_credentials()))
 
 
 def describe_http_error(exc: Any, context: str) -> str:

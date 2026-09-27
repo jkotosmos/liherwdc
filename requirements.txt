@@ -32,4 +32,8 @@ python-pptx>=1.0
 google-api-python-client>=2.150.0
 google-auth>=2.35.0
 google-auth-oauthlib>=1.2.1
+# Транспорт библиотек Google: им передаём свои сертификаты и прокси (app/net.py).
+google-auth-httplib2>=0.2.0
+httplib2>=0.22
+requests>=2.31
 cryptography>=41.0

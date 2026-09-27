@@ -59,3 +59,57 @@ def test_direct_mode_bypasses_dead_proxy(clean_proxy_env, monkeypatch) -> None:
         assert httpx.get(url, timeout=3, **net.http_options()).status_code == 200
     finally:
         server.shutdown()
+
+
+class TestGoogleTransport:
+    """Библиотеки Google: те же сертификаты и прокси, что у всего бота."""
+
+    def test_bundle_contains_certifi(self) -> None:
+        import certifi
+
+        bundle = open(net.ca_bundle_path(), encoding="utf-8").read()
+        first_cert = open(certifi.where(), encoding="utf-8").read().split("-----END CERTIFICATE-----")[0]
+        assert first_cert.strip() in bundle
+
+    def test_requests_session_direct(self, clean_proxy_env, monkeypatch) -> None:
+        import requests
+
+        monkeypatch.setenv("OPERON_PROXY", "none")
+        session = net.configure_requests_session(requests.Session())
+        assert session.trust_env is False and session.proxies == {}
+        assert session.verify == net.ca_bundle_path()
+
+    def test_requests_session_explicit_proxy(self, clean_proxy_env, monkeypatch) -> None:
+        import requests
+
+        monkeypatch.setenv("OPERON_PROXY", "http://10.0.0.5:3128")
+        session = net.configure_requests_session(requests.Session())
+        assert session.proxies == {"http": "http://10.0.0.5:3128", "https": "http://10.0.0.5:3128"}
+
+    def test_httplib2_direct_has_no_proxy(self, clean_proxy_env, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_PROXY", "none")
+        http = net.httplib2_http()
+        assert http.proxy_info is None
+        assert http.ca_certs == net.ca_bundle_path()
+
+    def test_oauth_exchange_uses_configured_session(self, clean_proxy_env, monkeypatch) -> None:
+        """Именно здесь /auth ходил мимо OPERON_PROXY=none."""
+        from app.integrations import google_oauth
+
+        seen = {}
+
+        class FakeFlow:
+            def __init__(self):
+                import requests
+
+                self.oauth2session = requests.Session()
+
+            def fetch_token(self, code):
+                seen["trust_env"] = self.oauth2session.trust_env
+                raise RuntimeError("стоп")
+
+        monkeypatch.setenv("OPERON_PROXY", "none")
+        monkeypatch.setattr(google_oauth, "_flow", FakeFlow)
+        with pytest.raises(google_oauth.OAuthError):
+            google_oauth.exchange_code("4/0AfakeCode1234567890")
+        assert seen["trust_env"] is False

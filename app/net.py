@@ -114,3 +114,76 @@ def describe_proxy() -> str:
     proxies = getproxies()
     url = proxies.get("https") or proxies.get("all") or proxies.get("http") or ""
     return f"{_mask(url)} (системный прокси или переменная окружения)" if url else ""
+
+
+# --- requests и httplib2 (библиотеки Google) ----------------------------------
+# Библиотеки Google ходят в сеть не через httpx: обмен кода и обновление токена
+# идут через requests, вызовы Drive/Calendar — через httplib2. Им нельзя
+# передать SSLContext, только путь к файлу сертификатов, и прокси они берут
+# из окружения сами. Поэтому собираем общий файл сертификатов (certifi +
+# хранилище системы) и применяем ту же настройку OPERON_PROXY.
+
+_bundle_lock = __import__("threading").Lock()
+_bundle_path: str = ""
+
+
+def ca_bundle_path() -> str:
+    """Файл PEM: certifi плюс корневые сертификаты системы (на Windows — хранилище)."""
+    global _bundle_path
+    with _bundle_lock:
+        if _bundle_path and os.path.exists(_bundle_path):
+            return _bundle_path
+        import tempfile
+
+        import certifi
+
+        parts = [open(certifi.where(), encoding="utf-8").read()]
+        enum = getattr(ssl, "enum_certificates", None)  # есть только на Windows
+        if enum is not None:
+            for store in ("ROOT", "CA"):
+                try:
+                    for cert, encoding, trust in enum(store):
+                        if encoding == "x509_asn" and (trust is True or "1.3.6.1.5.5.7.3.1" in trust):
+                            parts.append(ssl.DER_cert_to_PEM_cert(cert))
+                except (OSError, PermissionError) as exc:  # pragma: no cover — Windows
+                    logger.warning("Хранилище %s не прочиталось: %s", store, exc)
+        else:
+            system = ssl.get_default_verify_paths().cafile
+            if system and os.path.exists(system):
+                parts.append(open(system, encoding="utf-8", errors="ignore").read())
+        extra = os.getenv("SSL_CERT_FILE")
+        if extra and os.path.exists(extra):
+            parts.append(open(extra, encoding="utf-8", errors="ignore").read())
+
+        fd, path = tempfile.mkstemp(prefix="operon-ca-", suffix=".pem")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(parts))
+        _bundle_path = path
+        return path
+
+
+def configure_requests_session(session):
+    """Сертификаты и прокси для requests.Session (обмен кода Google, токены)."""
+    session.verify = ca_bundle_path()
+    setting = proxy_setting()
+    if setting.lower() in DIRECT:
+        session.trust_env = False
+        session.proxies = {}
+    elif setting:
+        session.trust_env = False
+        session.proxies = {"http": setting, "https": setting}
+    return session
+
+
+def httplib2_http():
+    """httplib2.Http с теми же сертификатами и прокси — для API Google."""
+    import httplib2
+
+    setting = proxy_setting()
+    if setting.lower() in DIRECT:
+        proxy_info = None
+    elif setting:
+        proxy_info = httplib2.proxy_info_from_url(setting)
+    else:
+        proxy_info = httplib2.proxy_info_from_environment
+    return httplib2.Http(ca_certs=ca_bundle_path(), proxy_info=proxy_info, timeout=60)

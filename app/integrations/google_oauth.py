@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config import settings
+from ..net import configure_requests_session, explain
 from . import google_client, token_store
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,10 @@ def exchange_code(text: str) -> dict[str, Any]:
     """Обменивает код на токен и сохраняет его. Возвращает описание результата."""
     code = extract_code(text)
     flow = _flow()
+    # Обмен идёт через requests: те же сертификаты и прокси, что у всего бота.
+    # Иначе OPERON_PROXY=none здесь не действовал бы, и /auth падал бы на
+    # нестабильном системном прокси при работающем боте.
+    configure_requests_session(flow.oauth2session)
 
     # Google возвращает scope'ы в своём порядке и добавляет openid — oauthlib
     # считает это подменой прав и падает. Расхождение здесь безопасно:
@@ -337,12 +342,27 @@ def _describe_exchange_error(exc: Exception) -> str:
         )
     if "invalid_client" in lowered:
         return (
-            "Google не признал OAuth-клиент (invalid_client). Проверьте, что на сервере "
-            "лежит актуальный client_secret.json от того же проекта."
+            "Google не признал OAuth-клиент (invalid_client). GOOGLE_CLIENT_ID и "
+            "GOOGLE_CLIENT_SECRET должны быть от одного и того же клиента, а секрет — "
+            "действующим (после «Reset secret» старый перестаёт работать)."
         )
     if "access_denied" in lowered:
         return "Доступ не выдан: на экране согласия нажата «Отмена». Повторите /auth."
-    return f"Не удалось обменять код на токен: {message}"
+    # Сеть: прокси, таймаут, сертификат — объясняем словами и с советом.
+    return f"Не удалось обменять код на токен: {explain(exc)}"
+
+
+# Ошибки, которые Google показывает в браузере, до бота они не доходят.
+TROUBLESHOOTING = (
+    "\n\nЕсли Google показал ошибку:\n"
+    "• redirect_uri_mismatch — тип клиента в Google Cloud не тот: для этого режима "
+    "нужен «Desktop app» (или задайте OPERON_GOOGLE_CLIENT_TYPE=web и адрес возврата).\n"
+    "• «Доступ заблокирован» / org_internal — вход не тем аккаунтом: экран согласия "
+    "Internal пускает только аккаунты вашей организации Workspace.\n"
+    "• access_denied / «приложение не проверено, тестирование» — экран согласия в режиме "
+    "Testing: добавьте свой адрес в Test users или нажмите Publish app.\n"
+    "• «API не включён» — включите Drive, Calendar и Sheets API в том же проекте."
+)
 
 
 def instructions() -> str:
@@ -354,6 +374,7 @@ def instructions() -> str:
             "2. Всё. Код придёт на сервер сам, копировать ничего не нужно — "
             "я напишу, когда токен сохранится.\n\n"
             f"Жду ответа {settings.oauth_wait_minutes} мин."
+            + TROUBLESHOOTING
         )
     return (
         "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
@@ -364,6 +385,7 @@ def instructions() -> str:
         "3. Скопируйте адрес из строки браузера целиком и пришлите его сюда "
         "следующим сообщением.\n\n"
         f"Ссылка действует ограниченное время, жду код {settings.oauth_wait_minutes} мин."
+        + TROUBLESHOOTING
     )
 
 
