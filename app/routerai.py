@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .net import explain, ssl_context
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 CATALOG_TTL_SECONDS = 600
@@ -56,9 +57,9 @@ def _get(path: str, client: httpx.Client | None = None) -> Any:
         if client is not None:
             response = client.get(url, headers=headers)
         else:
-            response = httpx.get(url, headers=headers, timeout=TIMEOUT)
+            response = httpx.get(url, headers=headers, timeout=TIMEOUT, verify=ssl_context())
     except httpx.HTTPError as exc:
-        raise BillingError(f"Шлюз недоступен ({path}): {exc}") from exc
+        raise BillingError(f"Шлюз недоступен ({path}): {explain(exc)}") from exc
     if response.status_code == 401:
         raise BillingError("Шлюз не принял ключ (401). Проверьте ROUTERAI_API_KEY.")
     if response.status_code >= 400:

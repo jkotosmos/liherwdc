@@ -24,22 +24,44 @@ SEARCH_KEY_VARIABLES = (
 )
 
 
-def damaged_keys() -> list[tuple[str, str]]:
-    """Ключи, повреждённые при копировании. Возвращает (имя, причина).
+# Какие переменные нужны каждому поставщику. Порядок — порядок выбора.
+PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
+    "tavily": ("TAVILY_API_KEY",),
+    "brave": ("BRAVE_API_KEY",),
+    "serper": ("SERPER_API_KEY",),
+    "google": ("GOOGLE_CSE_KEY", "GOOGLE_CSE_ID"),
+}
+
+
+def key_problem(name: str) -> str:
+    """Почему значение переменной испорчено, или пустая строка, если всё в порядке.
 
     Ключ, в котором появились не-ASCII знаки, скопирован неудачно: терминалы
     и консоли подменяют часть символов точками, мессенджеры — дефис тире.
     Сервис на такой ключ отвечает «API key not valid», и человек идёт
     перевыпускать исправный ключ вместо того, чтобы перевставить его.
     """
-    damaged = []
-    for name in SEARCH_KEY_VARIABLES:
-        value = (os.getenv(name) or "").strip()
-        if not value:
-            continue
-        if not value.isascii():
-            bad = "".join(sorted({c for c in value if not c.isascii()}))
-            damaged.append((name, f"содержит посторонние знаки «{bad}» — испорчен при копировании"))
-        elif " " in value:
-            damaged.append((name, "содержит пробел внутри значения"))
-    return damaged
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return ""
+    if not value.isascii():
+        bad = "".join(sorted({c for c in value if not c.isascii()}))
+        return f"содержит посторонние знаки «{bad}» — испорчен при копировании"
+    if " " in value:
+        return "содержит пробел внутри значения"
+    return ""
+
+
+def damaged_keys(names: tuple[str, ...] = SEARCH_KEY_VARIABLES) -> list[tuple[str, str]]:
+    """Испорченные ключи среди заданных. Возвращает (имя, причина)."""
+    return [(name, why) for name in names if (why := key_problem(name))]
+
+
+def provider_usable(provider: str) -> bool:
+    """Все ключи поставщика заданы и ни один не испорчен.
+
+    Испорченная строка, оставшаяся от старой настройки, не должна выбирать
+    своего поставщика: иначе она выключила бы рабочий поиск.
+    """
+    names = PROVIDER_KEYS.get(provider, ())
+    return bool(names) and all(os.getenv(n, "").strip() for n in names) and not damaged_keys(names)

@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .net import explain, ssl_context
 
 PROBE_TOOL = {
     "name": "ping",
@@ -53,9 +54,10 @@ def _try_openai(base_url: str, api_key: str, model: str) -> tuple[bool, bool, st
             json=body,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             timeout=httpx.Timeout(90.0, connect=15.0),
+            verify=ssl_context(),
         )
     except httpx.HTTPError as exc:
-        return False, False, f"сеть: {exc}"
+        return False, False, f"сеть: {explain(exc)}"
 
     if response.status_code >= 400:
         return False, False, f"HTTP {response.status_code}: {response.text[:200]}"
@@ -86,9 +88,10 @@ def _try_anthropic(base_url: str, api_key: str, model: str) -> tuple[bool, bool,
                 "content-type": "application/json",
             },
             timeout=httpx.Timeout(90.0, connect=15.0),
+            verify=ssl_context(),
         )
     except httpx.HTTPError as exc:
-        return False, False, f"сеть: {exc}"
+        return False, False, f"сеть: {explain(exc)}"
 
     if response.status_code >= 400:
         return False, False, f"HTTP {response.status_code}: {response.text[:200]}"
@@ -107,6 +110,7 @@ def _list_models(base_url: str, api_key: str) -> list[str]:
             base_url.rstrip("/") + "/models",
             headers={"Authorization": f"Bearer {api_key}", "x-api-key": api_key},
             timeout=httpx.Timeout(30.0, connect=10.0),
+            verify=ssl_context(),
         )
         if response.status_code >= 400:
             return []

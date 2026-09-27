@@ -27,6 +27,8 @@ from xml.etree import ElementTree
 
 import httpx
 
+from ..net import is_certificate_error, ssl_context
+
 logger = logging.getLogger(__name__)
 
 TIMEOUT = httpx.Timeout(12.0, connect=6.0)
@@ -57,8 +59,13 @@ def _get(url: str, client: httpx.Client | None, **params: Any) -> httpx.Response
         if client is not None:
             response = client.get(url, params=params, headers=HEADERS)
         else:
-            response = httpx.get(url, params=params, headers=HEADERS, timeout=TIMEOUT, follow_redirects=True)
+            response = httpx.get(
+                url, params=params, headers=HEADERS, timeout=TIMEOUT,
+                follow_redirects=True, verify=ssl_context(),
+            )
     except httpx.HTTPError as exc:
+        if is_certificate_error(exc):
+            raise SourceError("сертификат не прошёл проверку (HTTPS перехватывает антивирус или прокси)") from exc
         raise SourceError(f"нет связи ({exc.__class__.__name__})") from exc
     if response.status_code >= 400:
         raise SourceError(f"ответ {response.status_code}")

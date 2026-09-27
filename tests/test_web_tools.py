@@ -250,14 +250,37 @@ class TestSearchErrorsExplainThemselves:
 class TestDamagedKeyAtRuntime:
     """Побитый при вставке ключ бот называет прямо, а не пересказывает «key not valid»."""
 
-    def test_masked_key_reported_without_calling_service(self, monkeypatch) -> None:
-        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••")
-        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
-
+    @staticmethod
+    def _forbid_google(monkeypatch):
         def forbidden(*args, **kwargs):
             raise AssertionError("с побитым ключом в сервис идти незачем")
 
         monkeypatch.setattr(web.httpx, "get", forbidden)
+
+    def test_leftover_damaged_key_falls_back_to_free(self, monkeypatch) -> None:
+        """Испорченная строка от старой настройки не выключает интернет."""
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
+        self._forbid_google(monkeypatch)
+        monkeypatch.setattr(web.free_search, "search", lambda q, n: ([
+            {"title": "t", "url": "https://a.test", "snippet": "s", "published": "", "engine": "Bing"}
+        ], []))
+
+        result = web._internet_search({"query": "рынок"})
+        assert result["provider"] == "free"
+
+    def test_working_tavily_wins_over_damaged_leftover(self, monkeypatch) -> None:
+        """Ровно случай из самопроверки: Tavily задан, рядом побитый GOOGLE_CSE_KEY."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-dev-ok")
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
+        assert web._search_provider() == "tavily"
+
+    def test_explicit_provider_with_damaged_key_is_named(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPERON_SEARCH_PROVIDER", "google")
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "0123456789abcdef0")
+        self._forbid_google(monkeypatch)
         with pytest.raises(ToolError, match="испорчен при копировании"):
             web._internet_search({"query": "рынок"})
 

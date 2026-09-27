@@ -19,7 +19,8 @@ from typing import Any
 import httpx
 
 from ..config import settings
-from ..search_keys import damaged_keys
+from ..net import explain, ssl_context
+from ..search_keys import PROVIDER_KEYS, damaged_keys, provider_usable
 from . import free_search
 from .base import ToolError, ToolSpec, registry
 
@@ -43,14 +44,9 @@ def _search_provider() -> str:
     explicit = (os.getenv("OPERON_SEARCH_PROVIDER") or "").strip().lower()
     if explicit:
         return "" if explicit in {"none", "off", "нет"} else explicit
-    if os.getenv("TAVILY_API_KEY"):
-        return "tavily"
-    if os.getenv("BRAVE_API_KEY"):
-        return "brave"
-    if os.getenv("SERPER_API_KEY"):
-        return "serper"
-    if os.getenv("GOOGLE_CSE_KEY") and os.getenv("GOOGLE_CSE_ID"):
-        return "google"
+    for provider in PROVIDER_KEYS:
+        if provider_usable(provider):
+            return provider
     return "free"
 
 
@@ -80,6 +76,7 @@ def _tavily(query: str, limit: int) -> list[dict[str, str]]:
             "search_depth": "basic",
         },
         timeout=TIMEOUT,
+        verify=ssl_context(),
     )
     response.raise_for_status()
     return [
@@ -98,6 +95,7 @@ def _brave(query: str, limit: int) -> list[dict[str, str]]:
             "Accept": "application/json",
         },
         timeout=TIMEOUT,
+        verify=ssl_context(),
     )
     response.raise_for_status()
     results = response.json().get("web", {}).get("results", [])
@@ -114,6 +112,7 @@ def _serper(query: str, limit: int) -> list[dict[str, str]]:
         json={"q": query, "num": limit},
         headers={"X-API-KEY": os.environ["SERPER_API_KEY"]},
         timeout=TIMEOUT,
+        verify=ssl_context(),
     )
     response.raise_for_status()
     return [
@@ -133,6 +132,7 @@ def _google_cse(query: str, limit: int) -> list[dict[str, str]]:
             "num": min(limit, 10),
         },
         timeout=TIMEOUT,
+        verify=ssl_context(),
     )
     response.raise_for_status()
     return [
@@ -205,7 +205,9 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
     if provider not in PROVIDERS:
         raise ToolError(f"Неизвестный поисковый провайдер «{provider}». Доступно: {sorted(PROVIDERS)}")
 
-    damaged = damaged_keys() if provider != "free" else []
+    # Сюда испорченный ключ попадает, только если поставщик задан явно
+    # (OPERON_SEARCH_PROVIDER): при автовыборе такие ключи пропускаются.
+    damaged = damaged_keys(PROVIDER_KEYS.get(provider, ()))
     if damaged:
         # Запрос с побитым ключом всё равно вернёт «ключ неверный» — честнее
         # сразу назвать настоящую причину, её поймёт и пользователь в чате.
@@ -230,7 +232,7 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
         reason = (
             _describe_search_error(provider, exc)
             if isinstance(exc, httpx.HTTPStatusError)
-            else f"Не удалось обратиться к поисковому сервису {provider}: {exc}"
+            else f"Не удалось обратиться к поисковому сервису {provider}: {explain(exc)}"
         )
         logger.warning("%s — переключаюсь на бесплатный поиск", reason)
         try:
@@ -281,12 +283,13 @@ def _open_url(tool_input: dict[str, Any]) -> Any:
             # Браузерный заголовок: многие сайты (госорганы, СМИ) отдают
             # пустую страницу или 403 «ботам» с нестандартным User-Agent.
             headers=free_search.HEADERS,
+            verify=ssl_context(),
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise ToolError(f"Страница ответила {exc.response.status_code}: {url}") from exc
     except httpx.HTTPError as exc:
-        raise ToolError(f"Не удалось открыть страницу {url}: {exc}") from exc
+        raise ToolError(f"Не удалось открыть страницу {url}: {explain(exc)}") from exc
 
     content_type = response.headers.get("content-type", "")
     if "html" in content_type:

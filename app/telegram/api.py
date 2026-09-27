@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 
+from ..net import explain, ssl_context
+
 logger = logging.getLogger(__name__)
 
 BASE = "https://api.telegram.org"
@@ -27,7 +29,7 @@ class TelegramAPI:
         self._token = token
         self._url = f"{BASE}/bot{token}"
         self._timeout = httpx.Timeout(timeout, connect=15.0)
-        self._client = httpx.Client(timeout=self._timeout)
+        self._client = httpx.Client(timeout=self._timeout, verify=ssl_context())
 
     def close(self) -> None:
         self._client.close()
@@ -36,7 +38,7 @@ class TelegramAPI:
         try:
             response = self._client.post(f"{self._url}/{method}", json=payload or {})
         except httpx.HTTPError as exc:
-            raise TelegramError(f"Сеть недоступна при вызове {method}: {exc}") from exc
+            raise TelegramError(f"Сеть недоступна при вызове {method}: {explain(exc)}") from exc
 
         try:
             data = response.json()
@@ -157,7 +159,7 @@ class TelegramAPI:
         try:
             response = self._client.get(url, timeout=self._timeout)
         except httpx.HTTPError as exc:
-            raise TelegramError(f"Сеть недоступна при скачивании файла: {exc}") from exc
+            raise TelegramError(f"Сеть недоступна при скачивании файла: {explain(exc)}") from exc
         if response.status_code != 200:
             raise TelegramError(
                 f"Не удалось скачать файл ({response.status_code}). "

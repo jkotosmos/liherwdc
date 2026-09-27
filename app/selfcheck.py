@@ -25,6 +25,7 @@ from .search_keys import GOOGLE_CSE_SHUTDOWN, SEARCH_KEY_VARIABLES  # noqa: F401
 from .search_keys import damaged_keys as _damaged_keys
 from .config import settings
 from .model_choice import current_model
+from .net import ssl_context
 
 TIMEOUT = 25.0
 
@@ -45,7 +46,7 @@ class Check:
 
 
 def _http(url: str, **kwargs: Any) -> httpx.Response:
-    return httpx.get(url, timeout=TIMEOUT, **kwargs)
+    return httpx.get(url, timeout=TIMEOUT, verify=ssl_context(), **kwargs)
 
 
 # --- настройки --------------------------------------------------------------
@@ -261,7 +262,9 @@ def check_google() -> list[Check]:
     client = google_oauth.describe_client()
 
     if client["configured"]:
-        checks.append(Check("Google: OAuth-клиент", OK, client["source"]))
+        client_id = settings.google_client_id
+        which = f" · клиент {client_id.split('-')[0]}-…" if client_id else ""
+        checks.append(Check("Google: OAuth-клиент", OK, client["source"] + which))
 
         # Для Desktop-клиента петлевой адрес — это норма, а не недоработка.
         # Советовать здесь «переключитесь на публичный адрес» значило бы
@@ -361,6 +364,7 @@ def _granted_scopes() -> set[str] | None:
             "https://oauth2.googleapis.com/tokeninfo",
             params={"access_token": creds.token},
             timeout=15,
+            verify=ssl_context(),
         )
         if response.status_code != 200:
             return None
@@ -467,15 +471,35 @@ def check_billing() -> list[Check]:
     data = routerai.billing()
     unit = data.get("currency", "")
     checks: list[Check] = []
+    errors = data.get("errors") or []
     if "balance" in data:
+        balance = data["balance"]
         source = f" ({data['balance_source']})" if data.get("balance_source") else ""
-        checks.append(Check("Баланс", OK, f"{data['balance']:.2f} {unit}{source}"))
+        detail = f"{balance:.2f} {unit}{source}"
+        hints = [f"Не ответило: {e}" for e in errors]
+        if balance <= 0:
+            # Ноль или минус — следующий запрос к модели шлюз, скорее всего,
+            # отклонит (обычно 402). Это не замечание, а причина будущего отказа.
+            checks.append(
+                Check(
+                    "Баланс",
+                    FAIL,
+                    detail + " — средства или лимит ключа исчерпаны",
+                    [
+                        "Пополните баланс в кабинете RouterAI; если у ключа задан "
+                        "лимит расхода — поднимите или снимите его.",
+                        *hints,
+                    ],
+                )
+            )
+        else:
+            checks.append(Check("Баланс", OK, detail, hints))
     else:
         checks.append(
             Check(
                 "Баланс",
                 WARN,
-                "шлюз не сообщил баланс: " + "; ".join(data.get("errors") or ["нет данных"]),
+                "шлюз не сообщил баланс: " + "; ".join(errors or ["нет данных"]),
                 ["Сырые ответы шлюза: команда /routerai в боте (или python -m app.routerai) — пришлите их."],
             )
         )
@@ -493,29 +517,46 @@ def check_billing() -> list[Check]:
 
 
 
+PROVIDER_LABEL = {
+    "free": "бесплатный поиск",
+    "tavily": "Tavily",
+    "brave": "Brave",
+    "serper": "Serper",
+    "google": "Google CSE",
+    "": "никакой (интернет выключен)",
+}
+
+
 def check_search() -> list[Check]:
+    """Живой поиск плюс предупреждение о лишних испорченных ключах.
+
+    Испорченная строка, оставшаяся от старой настройки, поиск не ломает:
+    её поставщик просто не выбирается. Поэтому это замечание, а не сбой.
+    """
+    checks = _search_live_check()
+    damaged = _damaged_keys()
+    already_named = any("испорчен" in c.detail or "пробел" in c.detail for c in checks)
+    if damaged and not already_named:
+        from .tools.web import _search_provider
+
+        active = PROVIDER_LABEL.get(_search_provider(), _search_provider())
+        hints = [
+            f"Эти строки не используются — поиск идёт через: {active}. "
+            "Удалите их из .env или вставьте ключ заново (перевыпускать не нужно: "
+            "значение испортилось при вставке).",
+            "Проверить строку: Select-String -Path .env -Pattern KEY",
+        ]
+        if any(name.startswith("GOOGLE_CSE") for name, _ in damaged):
+            hints.append(GOOGLE_CSE_SHUTDOWN)
+        checks.append(
+            Check("Ключи поиска", WARN, "; ".join(f"{name}: {why}" for name, why in damaged), hints)
+        )
+    return checks
+
+
+def _search_live_check() -> list[Check]:
     from .tools import registry
     import json as _json
-
-    damaged = _damaged_keys()
-    if damaged:
-        return [
-            Check(
-                "Интернет-поиск",
-                FAIL,
-                "; ".join(f"{name}: {why}" for name, why in damaged),
-                [
-                    "Значение испорчено при вставке, а не сервисом. "
-                    "Перевыпускать ключ не нужно — вставьте его заново.",
-                    "Проверить строку: Select-String -Path .env -Pattern KEY",
-                ]
-                + (
-                    [GOOGLE_CSE_SHUTDOWN]
-                    if any(name.startswith("GOOGLE_CSE") for name, _ in damaged)
-                    else []
-                ),
-            )
-        ]
 
     if "internet_search" not in registry.names():
         return [
@@ -533,9 +574,12 @@ def check_search() -> list[Check]:
             hints.append("Сеть сервера не достучалась ни до одного бесплатного источника. "
                          "Повторите /check позже; при постоянном сбое можно задать TAVILY_API_KEY "
                          "(бесплатный тариф).")
-        if "сервис google" in content:
+        if "испорчен" in content or "пробел" in content:
+            hints.append("Значение испорчено при вставке, а не сервисом. "
+                         "Перевыпускать ключ не нужно — вставьте его заново.")
+        if "сервис google" in content or "GOOGLE_CSE" in content:
             hints.append(GOOGLE_CSE_SHUTDOWN)
-        return [Check("Интернет-поиск", FAIL, content[:150], hints)]
+        return [Check("Интернет-поиск", FAIL, content[:200], hints)]
 
     payload = _json.loads(content)
     status = payload.get("status")

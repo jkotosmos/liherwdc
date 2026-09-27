@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .net import explain, ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ class OpenAICompatBackend:
         # Заголовки ставим в обоих случаях: иначе проверка с заглушкой шла бы
         # без авторизации и не отражала настоящий запрос.
         if client is None:
-            self._client = httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT)
+            self._client = httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT, verify=ssl_context())
         else:
             self._client = client
             self._client.headers.update(headers)
@@ -250,7 +251,11 @@ class _OpenAIStream:
     def __enter__(self) -> "_OpenAIStream":
         context = self._client.stream("POST", self._url, json=self._body)
         self._context = context
-        response = context.__enter__()
+        try:
+            response = context.__enter__()
+        except httpx.HTTPError as exc:
+            # Сетевой сбой — понятный текст, а не «внутренняя ошибка агента».
+            raise LLMError(f"Нет связи со шлюзом модели: {explain(exc)}") from exc
         if response.status_code >= 400:
             response.read()
             context.__exit__(None, None, None)

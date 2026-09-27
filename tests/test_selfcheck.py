@@ -229,22 +229,34 @@ class TestDamagedKeys:
     Проверка обязана отличить «ключ плохой» от «ключ доехал побитым».
     """
 
+    @staticmethod
+    def _damaged_check(checks):
+        found = [c for c in checks if c.name == "Ключи поиска"]
+        assert found, [c.name for c in checks]
+        return found[0]
+
     def test_non_ascii_in_key_is_named_as_paste_damage(self, monkeypatch) -> None:
         monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••••••••")
-        checks = selfcheck.check_search()
+        check = self._damaged_check(selfcheck.check_search())
 
-        assert checks[0].status == FAIL
-        assert "испорчен при копировании" in checks[0].detail
-        assert any("Перевыпускать ключ не нужно" in h for h in checks[0].hints)
+        assert "испорчен при копировании" in check.detail
+        assert any("перевыпускать не нужно" in h for h in check.hints)
+
+    def test_unused_damaged_key_is_a_warning_not_a_failure(self, monkeypatch) -> None:
+        """Лишняя испорченная строка поиск не ломает: её поставщик не выбирается."""
+        monkeypatch.setenv("GOOGLE_CSE_KEY", "AIzaSyXX•••••••••••")
+        checks = selfcheck.check_search()
+        assert self._damaged_check(checks).status == WARN
+        assert not [c for c in checks if c.status == FAIL]
 
     def test_dash_replacement_is_caught(self, monkeypatch) -> None:
         """Мессенджеры превращают дефис в тире — ключ ломается незаметно."""
         monkeypatch.setenv("TAVILY_API_KEY", "tvly—abc123")  # длинное тире
-        assert selfcheck.check_search()[0].status == FAIL
+        assert "испорчен" in self._damaged_check(selfcheck.check_search()).detail
 
     def test_inner_space_is_caught(self, monkeypatch) -> None:
         monkeypatch.setenv("SERPER_API_KEY", "abc 123")
-        assert "пробел" in selfcheck.check_search()[0].detail
+        assert "пробел" in self._damaged_check(selfcheck.check_search()).detail
 
     def test_clean_key_passes_through(self, monkeypatch) -> None:
         for name in selfcheck.SEARCH_KEY_VARIABLES:
@@ -258,3 +270,85 @@ class TestDamagedKeys:
         for name in selfcheck.SEARCH_KEY_VARIABLES:
             monkeypatch.delenv(name, raising=False)
         assert selfcheck._damaged_keys() == []
+
+
+class TestBillingCheck:
+    def _run(self, monkeypatch, data):
+        from app import routerai
+
+        monkeypatch.setattr(routerai, "available", lambda: True)
+        monkeypatch.setattr(routerai, "billing", lambda: data)
+        monkeypatch.setattr(routerai, "list_models", lambda: [{"id": "a", "tools": True}])
+        return {c.name: c for c in selfcheck.check_billing()}
+
+    def test_negative_balance_is_a_failure(self, monkeypatch) -> None:
+        """Ровно случай из самопроверки: «-0.02 ₽ (лимит ключа)» было OK."""
+        checks = self._run(monkeypatch, {
+            "currency": "₽", "balance": -0.02, "balance_source": "лимит ключа",
+            "errors": ["Шлюз ответил 403 на /credits."],
+        })
+        assert checks["Баланс"].status == FAIL
+        assert "исчерпаны" in checks["Баланс"].detail
+        assert any("Пополните" in h for h in checks["Баланс"].hints)
+        assert any("/credits" in h for h in checks["Баланс"].hints)
+
+    def test_positive_balance_ok(self, monkeypatch) -> None:
+        checks = self._run(monkeypatch, {"currency": "₽", "balance": 150.0, "errors": []})
+        assert checks["Баланс"].status == OK
+        assert checks["Каталог моделей"].status == OK
+
+
+class TestCertificateTrust:
+    def test_context_trusts_system_store_and_certifi(self) -> None:
+        import ssl
+
+        from app import net
+
+        context = net.ssl_context()
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        assert context.cert_store_stats()["x509_ca"] > 100, "certifi должен быть загружен"
+
+    def test_certificate_error_is_explained(self) -> None:
+        from app import net
+
+        exc = Exception("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain")
+        assert "антивирус" in net.explain(exc)
+        assert "антивирус" not in net.explain(Exception("timeout"))
+
+    def test_routerai_uses_trusted_context(self, monkeypatch) -> None:
+        from dataclasses import replace
+
+        from app import net, routerai
+        from app.config import settings
+
+        monkeypatch.setattr(routerai, "settings", replace(settings, provider="routerai", api_key="k",
+                                                          base_url="https://routerai.test/api/v1"))
+        seen = {}
+
+        def fake_get(url, **kwargs):
+            seen.update(kwargs)
+            import httpx
+            return httpx.Response(200, json={"data": []}, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(routerai.httpx, "get", fake_get)
+        routerai.list_models(force=True)
+        routerai.reset_cache()
+        assert seen["verify"] is net.ssl_context()
+
+    def test_openai_backend_stream_network_error_is_llm_error(self) -> None:
+        import httpx
+
+        from app.llm import LLMError, _OpenAIStream
+
+        def handler(request):
+            raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stream = _OpenAIStream(client, "https://gw.test/v1/chat/completions", {})
+        try:
+            stream.__enter__()
+        except LLMError as exc:
+            assert "антивирус" in str(exc)
+        else:
+            raise AssertionError("ожидалась LLMError")
