@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config import settings
 from ..net import configure_requests_session, explain
-from . import google_client, token_store
+from . import accounts, google_client, token_store
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class _Pending:
 
     created_at: float
     label: str
+    account: str = ""
     done: bool = False
     result: dict[str, Any] | None = None
     error: str = ""
@@ -178,7 +179,9 @@ def start(label: str = "") -> tuple[str, str]:
     )
     with _lock:
         _forget_stale()
-        _pending[state] = _Pending(created_at=time.monotonic(), label=label)
+        # Чей это /auth: код с публичного адреса возврата сохраним в токен
+        # именно этого пользователя, а не того, кто окажется «текущим».
+        _pending[state] = _Pending(created_at=time.monotonic(), label=label, account=accounts.current())
     return url, state
 
 
@@ -218,7 +221,8 @@ def handle_callback(code: str, state: str) -> dict[str, Any]:
         raise OAuthError("Эта ссылка уже использована. Если нужно заново — /auth.")
 
     try:
-        result = exchange_code(code)
+        with accounts.use(entry.account):
+            result = exchange_code(code)
     except OAuthError as exc:
         with _lock:
             entry.done = True

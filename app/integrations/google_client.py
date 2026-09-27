@@ -15,7 +15,7 @@ from typing import Any
 from ..config import settings
 from ..errors import IntegrationUnavailable
 from ..net import configure_requests_session, httplib2_http
-from . import token_store
+from . import accounts, token_store
 
 try:  # Google-библиотеки опциональны: без них агент запускается, но интеграции выключены.
     from google.auth.transport.requests import AuthorizedSession, Request
@@ -39,17 +39,18 @@ except ImportError as exc:  # pragma: no cover — зависит от окру�
 
 
 _lock = threading.Lock()
-_cached: Any = None
+# Кэш учётных данных — у каждого пользователя свой (integrations/accounts.py).
+_cached: dict[str, Any] = {}
 
 SETUP_HINT = (
-    "Интеграция с Google не подключена. Владелец бота должен отправить боту /auth "
-    "и разрешить доступ под нужной учётной записью Google (нужны заданные "
-    "GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET)."
+    "Google для этого пользователя не подключён. Отправьте боту /auth и разрешите "
+    "доступ своей учётной записью Google — у каждого пользователя свой доступ, "
+    "чужой не подставляется."
 )
 
 
 def _load_credentials() -> Any:
-    global _cached
+    key = accounts.resolve()
 
     if not GOOGLE_LIBS_AVAILABLE:
         raise IntegrationUnavailable(
@@ -58,8 +59,9 @@ def _load_credentials() -> Any:
         )
 
     with _lock:
-        if _cached is not None and _cached.valid:
-            return _cached
+        cached = _cached.get(key)
+        if cached is not None and cached.valid:
+            return cached
 
         try:
             payload = token_store.load_token()
@@ -94,14 +96,13 @@ def _load_credentials() -> Any:
                     "Пройдите авторизацию заново: python -m app.integrations.google_auth"
                 )
 
-        _cached = creds
+        _cached[key] = creds
         return creds
 
 
 def reset_cache() -> None:
-    global _cached
     with _lock:
-        _cached = None
+        _cached.clear()
 
 
 def get_service(api: str, version: str) -> Any:

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from . import auth, model_choice, routerai
 from .agent import agent
 from .config import BASE_DIR, settings
-from .integrations import google_client, google_oauth
+from .integrations import accounts, google_client, google_oauth
 from .kb import knowledge_base
 from .sessions import store
 from .telegram import webapp
@@ -252,7 +252,7 @@ def telegram_auth(request: TelegramAuthRequest) -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
-            "token": auth.issue_token(),
+            "token": auth.issue_token(str(user.get("id") or "")),
             "user": {"id": user.get("id"), "first_name": user.get("first_name", "")},
         }
     )
@@ -333,9 +333,18 @@ def login_page() -> Response:
     return FileResponse(STATIC_DIR / "login.html")
 
 
+def _account(request: Request) -> str:
+    """Чей Google: Telegram ID из токена Mini App; вход паролем — владелец."""
+    bearer = request.headers.get("authorization", "")
+    token = bearer[7:].strip() if bearer.lower().startswith("bearer ") else request.cookies.get(auth.COOKIE_NAME)
+    return auth.token_subject(token)
+
+
 @app.post("/api/chat")
-def chat(request: ChatRequest) -> StreamingResponse:
+def chat(request: ChatRequest, http_request: Request) -> StreamingResponse:
     session = store.get_or_create(request.session_id)
+    if not session.account:
+        session.account = _account(http_request)
 
     def events() -> Iterator[dict[str, Any]]:
         yield {"type": "session", "session_id": session.session_id}
@@ -345,8 +354,11 @@ def chat(request: ChatRequest) -> StreamingResponse:
 
 
 @app.post("/api/confirm")
-def confirm(request: ConfirmRequest) -> StreamingResponse:
+def confirm(request: ConfirmRequest, http_request: Request) -> StreamingResponse:
     session = store.get(request.session_id)
+    if session is not None and session.account != _account(http_request):
+        # Чужую сессию не подтверждаем: действие выполнилось бы с чужим Google.
+        session = None
     if session is None:
         raise HTTPException(status_code=404, detail="Сессия не найдена — начните новый диалог.")
     if session.pending_expired:
@@ -379,8 +391,9 @@ def reset(request: ResetRequest) -> dict[str, str]:
 
 
 @app.get("/api/status")
-def status() -> dict[str, Any]:
-    google = google_client.status()
+def status(http_request: Request) -> dict[str, Any]:
+    with accounts.use(_account(http_request)):
+        google = google_client.status()
     kb = knowledge_base.stats
     return {
         "org": settings.org_name,

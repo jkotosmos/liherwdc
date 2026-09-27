@@ -18,7 +18,7 @@ from typing import Any
 import anthropic
 
 from .config import settings
-from .integrations import google_client
+from .integrations import accounts, google_client
 from .llm import LLMError, build_backend
 from .model_choice import current_model
 from .kb import knowledge_base
@@ -99,6 +99,8 @@ class Session:
     messages: list[dict[str, Any]] = field(default_factory=list)
     pending: PendingTurn | None = None
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
+    # Чьим Google пользоваться (integrations/accounts.py). Пусто — основной.
+    account: str = ""
 
     @property
     def awaiting_confirmation(self) -> bool:
@@ -228,6 +230,10 @@ class OperonAgent:
     # --- публичный API ------------------------------------------------------
 
     def send_user_message(self, session: Session, text: str) -> Iterator[dict[str, Any]]:
+        # Сессия запоминает своего пользователя с первого сообщения: бот
+        # выставляет его на время обработки, веб — из токена входа.
+        if not session.account:
+            session.account = accounts.current()
         # Просроченный ход снимаем молча: пользователь уже начал говорить о другом,
         # а модель обязана узнать, что действие не выполнено.
         expired_results = self._discard_expired_pending(session)
@@ -259,7 +265,9 @@ class OperonAgent:
         else:
             session.messages.append({"role": "user", "content": text})
 
-        session.messages.append({"role": "system", "content": self._runtime_context()})
+        with accounts.use(session.account):
+            runtime = self._runtime_context()
+        session.messages.append({"role": "system", "content": runtime})
         self._trim_history(session)
         yield from self._run_loop(session)
 
@@ -277,6 +285,8 @@ class OperonAgent:
         отсутствие решения — тоже отказ. При ``timed_out`` отказом считается
         именно молчание, и модель получает об этом отдельную формулировку.
         """
+        if not session.account:
+            session.account = accounts.current()
         pending = session.pending
         if pending is None:
             yield {"type": "error", "message": "Нет действий, ожидающих подтверждения."}
@@ -292,7 +302,8 @@ class OperonAgent:
 
             if decision in {"approve", "approved", "yes", "confirm", "да"}:
                 yield {"type": "tool_start", "name": action.name, "activity": self._activity(action.name)}
-                content, is_error = registry.execute(action.name, action.tool_input)
+                with accounts.use(session.account):
+                    content, is_error = registry.execute(action.name, action.tool_input)
                 yield {
                     "type": "tool_end",
                     "name": action.name,
@@ -443,7 +454,8 @@ class OperonAgent:
                     continue
 
                 yield {"type": "tool_start", "name": block.name, "activity": self._activity(block.name)}
-                content, is_error = registry.execute(block.name, tool_input)
+                with accounts.use(session.account):
+                    content, is_error = registry.execute(block.name, tool_input)
                 yield {
                     "type": "tool_end",
                     "name": block.name,

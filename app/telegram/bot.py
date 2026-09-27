@@ -21,7 +21,7 @@ from typing import Any
 from ..agent import agent as default_agent
 from ..config import settings
 from ..model_choice import current_model
-from ..integrations import google_client, google_oauth
+from ..integrations import accounts, google_client, google_oauth
 from ..kb import intake, knowledge_base
 from ..sessions import store
 from .. import reminders
@@ -169,12 +169,16 @@ class TelegramBot:
         return None
 
     def _handle_update(self, update: dict[str, Any]) -> None:
-        if self._allowed_user(update) is None:
+        user_id = self._allowed_user(update)
+        if user_id is None:
             return
-        if "callback_query" in update:
-            self._handle_callback(update["callback_query"])
-        elif "message" in update:
-            self._handle_message(update["message"])
+        # Всё, что бот делает по этому сообщению, — от имени этого человека:
+        # его Google, его /auth, его /check (integrations/accounts.py).
+        with accounts.use(user_id):
+            if "callback_query" in update:
+                self._handle_callback(update["callback_query"])
+            elif "message" in update:
+                self._handle_message(update["message"])
 
     # --- сообщения ---
 
@@ -780,32 +784,30 @@ class TelegramBot:
         этот ассистент принадлежит». Отправленное помечается только после
         успешной отправки — иначе сбой связи проглотил бы напоминание молча.
         """
-        plan = reminders.pending()
-        if not plan:
-            return
-
-        delivered: list[reminders.Reminder] = []
-        for reminder in plan:
-            if not reminder.text:
-                # Пустая сводка: отмечаем как обработанную, но не пишем.
-                # Ежедневное «всё в порядке» перестают читать.
-                delivered.append(reminder)
-                continue
-            sent_to_someone = False
-            for user_id in sorted(self._allowed):
-                try:
-                    for chunk in split_message(reminder.text):
-                        self._api.send_message(user_id, chunk)
-                    sent_to_someone = True
-                except TelegramError as exc:
-                    # Обычная причина — пользователь не открывал диалог с ботом.
-                    logger.warning("Напоминание не доставлено %s: %s", user_id, exc)
-            if sent_to_someone:
-                delivered.append(reminder)
-
-        if delivered:
-            reminders.mark_sent(delivered)
-            logger.info("Напоминаний отправлено: %s", sum(1 for r in delivered if r.text))
+        # Сводка у каждого своя: поручения общие, а встречи дня — из его
+        # собственного календаря. Общая сводка разослала бы всем встречи владельца.
+        for user_id in sorted(self._allowed):
+            with accounts.use(user_id):
+                plan = reminders.pending(account=str(user_id))
+                if not plan:
+                    continue
+                delivered: list[reminders.Reminder] = []
+                for reminder in plan:
+                    if not reminder.text:
+                        # Пустая сводка: отмечаем как обработанную, но не пишем.
+                        # Ежедневное «всё в порядке» перестают читать.
+                        delivered.append(reminder)
+                        continue
+                    try:
+                        for chunk in split_message(reminder.text):
+                            self._api.send_message(user_id, chunk)
+                        delivered.append(reminder)
+                    except TelegramError as exc:
+                        # Обычная причина — пользователь не открывал диалог с ботом.
+                        logger.warning("Напоминание не доставлено %s: %s", user_id, exc)
+                if delivered:
+                    reminders.mark_sent(delivered)
+                    logger.info("Напоминаний для %s: %s", user_id, sum(1 for r in delivered if r.text))
 
     def _maybe_resume(self, chat_id: int) -> None:
         """Продолжает ход, когда решения приняты по всем карточкам."""

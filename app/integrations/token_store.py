@@ -20,6 +20,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from ..config import settings
+from . import accounts
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +64,21 @@ def _cipher() -> Fernet:
     return Fernet(key)
 
 
+def _plain_path() -> Path:
+    """Файл токена текущего пользователя (см. integrations/accounts.py)."""
+    key = accounts.resolve()
+    if not key:
+        return settings.google_token_path
+    return settings.credentials_dir / f"google_token_{key}.json"
+
+
 def _encrypted_path() -> Path:
-    return settings.google_token_path.with_suffix(
-        settings.google_token_path.suffix + ENCRYPTED_SUFFIX
-    )
+    plain = _plain_path()
+    return plain.with_suffix(plain.suffix + ENCRYPTED_SUFFIX)
 
 
 def token_exists() -> bool:
-    return _encrypted_path().exists() or settings.google_token_path.exists()
+    return _encrypted_path().exists() or _plain_path().exists()
 
 
 def save_token(payload: str) -> Path:
@@ -81,9 +89,9 @@ def save_token(payload: str) -> Path:
         path = _encrypted_path()
         path.write_bytes(_cipher().encrypt(payload.encode("utf-8")))
         # Открытую копию не оставляем.
-        settings.google_token_path.unlink(missing_ok=True)
+        _plain_path().unlink(missing_ok=True)
     else:
-        path = settings.google_token_path
+        path = _plain_path()
         path.write_text(payload, encoding="utf-8")
         logger.warning(
             "Токен Google сохранён без шифрования. На сервере задайте "
@@ -115,8 +123,8 @@ def load_token() -> str | None:
                 f"({settings.credentials_dir / SALT_FILE}). Пройдите авторизацию заново."
             ) from exc
 
-    if settings.google_token_path.exists():
-        payload = settings.google_token_path.read_text(encoding="utf-8")
+    if _plain_path().exists():
+        payload = _plain_path().read_text(encoding="utf-8")
         # Ключ появился позже — переносим открытый токен под шифрование.
         if encryption_enabled():
             logger.info("Найден незашифрованный токен — перешифровываю")

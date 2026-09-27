@@ -193,7 +193,7 @@ def build_digest(today: date, events: list[dict], overdue: list[dict], upcoming:
 # --- планировщик ------------------------------------------------------------
 
 
-def pending(moment: datetime | None = None) -> list[Reminder]:
+def pending(moment: datetime | None = None, account: str = "") -> list[Reminder]:
     """Что нужно отправить прямо сейчас. Уже отправленное не повторяется."""
     if not settings.reminders_enabled:
         return []
@@ -210,7 +210,8 @@ def pending(moment: datetime | None = None) -> list[Reminder]:
     # Утренняя сводка: один раз в день, начиная с назначенного часа. Если бот
     # в это время лежал, сводка уйдёт при первом же подъёме — но всё ещё
     # сегодня, а не задним числом.
-    digest_key = f"digest:{today.isoformat()}"
+    # Ключ отправки — свой у каждого получателя: один получил, другой ещё нет.
+    digest_key = f"digest:{today.isoformat()}" + (f":{account}" if account else "")
     if (
         digest_key not in sent
         and moment.hour >= settings.digest_hour

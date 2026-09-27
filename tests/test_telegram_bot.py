@@ -568,7 +568,7 @@ class TestProactiveReminders:
         from app.reminders import Reminder
 
         monkeypatch.setattr(
-            bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="<b>Сводка</b>")]
+            bot_module.reminders, "pending", lambda **_: [Reminder(key="d:1", text="<b>Сводка</b>")]
         )
         marked: list = []
         monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
@@ -583,7 +583,7 @@ class TestProactiveReminders:
         bot, api = self._bot(monkeypatch)
         from app.reminders import Reminder
 
-        monkeypatch.setattr(bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="")])
+        monkeypatch.setattr(bot_module.reminders, "pending", lambda **_: [Reminder(key="d:1", text="")])
         marked: list = []
         monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
 
@@ -598,7 +598,7 @@ class TestProactiveReminders:
         from app.reminders import Reminder
 
         monkeypatch.setattr(
-            bot_module.reminders, "pending", lambda: [Reminder(key="d:1", text="Сводка")]
+            bot_module.reminders, "pending", lambda **_: [Reminder(key="d:1", text="Сводка")]
         )
         marked: list = []
         monkeypatch.setattr(bot_module.reminders, "mark_sent", lambda plan: marked.append(plan))
@@ -613,7 +613,7 @@ class TestProactiveReminders:
 
     def test_nothing_pending_means_no_calls(self, monkeypatch) -> None:
         bot, api = self._bot(monkeypatch)
-        monkeypatch.setattr(bot_module.reminders, "pending", lambda: [])
+        monkeypatch.setattr(bot_module.reminders, "pending", lambda **_: [])
         bot.send_reminders()
         assert api.calls == []
 

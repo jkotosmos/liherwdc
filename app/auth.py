@@ -50,26 +50,55 @@ def _secret() -> bytes:
     return generated
 
 
-def issue_token() -> str:
-    """Токен вида «время.подпись» — проверяется без хранения состояния."""
+def issue_token(subject: str = "") -> str:
+    """Токен «время.подпись» или «время.пользователь.подпись».
+
+    Пользователь (Telegram ID) нужен Mini App: по нему выбирается Google
+    именно этого человека. Подпись закрывает и его — подменить ID нельзя.
+    """
     issued = str(int(time.time()))
-    signature = hmac.new(_secret(), issued.encode("ascii"), sha256).hexdigest()
-    return f"{issued}.{signature}"
+    subject = "".join(ch for ch in str(subject or "") if ch.isdigit())
+    body = f"{issued}.{subject}" if subject else issued
+    signature = hmac.new(_secret(), body.encode("ascii"), sha256).hexdigest()
+    return f"{body}.{signature}"
+
+
+def _parse(token: str | None) -> tuple[str, str] | None:
+    """(время, пользователь) для действительного токена, иначе None."""
+    if not token or "." not in token:
+        return None
+    parts = token.split(".")
+    if len(parts) == 2:
+        issued, signature = parts
+        subject = ""
+    elif len(parts) == 3:
+        issued, subject, signature = parts
+        if not subject.isdigit():
+            return None
+    else:
+        return None
+    if not issued.isdigit():
+        return None
+
+    body = f"{issued}.{subject}" if subject else issued
+    expected = hmac.new(_secret(), body.encode("ascii"), sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return None
+
+    age_hours = (time.time() - int(issued)) / 3600
+    if not 0 <= age_hours <= settings.auth_ttl_hours:
+        return None
+    return issued, subject
 
 
 def token_is_valid(token: str | None) -> bool:
-    if not token or "." not in token:
-        return False
-    issued, _, signature = token.partition(".")
-    if not issued.isdigit():
-        return False
+    return _parse(token) is not None
 
-    expected = hmac.new(_secret(), issued.encode("ascii"), sha256).hexdigest()
-    if not hmac.compare_digest(expected, signature):
-        return False
 
-    age_hours = (time.time() - int(issued)) / 3600
-    return 0 <= age_hours <= settings.auth_ttl_hours
+def token_subject(token: str | None) -> str:
+    """Telegram ID из токена Mini App; пусто — вход паролем (владелец)."""
+    parsed = _parse(token)
+    return parsed[1] if parsed else ""
 
 
 def password_is_valid(candidate: str) -> bool:
