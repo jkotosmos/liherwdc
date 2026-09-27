@@ -62,6 +62,13 @@ class TelegramAPI:
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
+    def set_my_commands(self, commands: list[dict[str, str]], chat_id: int) -> None:
+        """Подсказки команд при вводе «/» — в конкретном чате."""
+        self._call(
+            "setMyCommands",
+            {"commands": commands, "scope": {"type": "chat", "chat_id": chat_id}},
+        )
+
     def set_chat_menu_button(self, chat_id: int, text: str, url: str) -> None:
         """Кнопка слева от поля ввода, открывающая Mini App в этом чате."""
         self._call(

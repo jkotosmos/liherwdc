@@ -27,6 +27,7 @@ from ..sessions import store
 from .. import reminders
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
+from . import menu
 from .webapp import miniapp_url
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ GREETING = (
     "/new — начать диалог заново\n"
     "/status — что подключено\n"
     "/auth — подключить Google (или переподключить)\n"
+    "/menu — меню по разделам\n"
     "/app — приложение: выбор модели, баланс, чат\n"
     "/check — проверить всё: модель, баланс, Google, поиск\n"
     "/help — подсказка"
@@ -208,12 +210,19 @@ class TelegramBot:
             self._handle_command(chat_id, text)
             return
 
+        self._handle_text(chat_id, text)
+
+    def _handle_text(self, chat_id: int, text: str, from_menu: bool = False) -> None:
+        """Реплика пользователя — набранная или отправленная кнопкой меню."""
         state = self._states.setdefault(chat_id, ChatState())
 
-        # Ожидаем код авторизации Google после /auth.
+        # Ожидаем код авторизации Google после /auth. Нажатие кнопки меню
+        # значит, что от авторизации отказались, — ожидание снимаем молча.
         if state.oauth_started_at is not None:
-            self._handle_oauth_code(chat_id, state, text)
-            return
+            if not from_menu:
+                self._handle_oauth_code(chat_id, state, text)
+                return
+            self._clear_oauth(state)
 
         # Ожидаем текст правок к отклонённому действию.
         if state.awaiting_comment_for:
@@ -237,7 +246,12 @@ class TelegramBot:
         command = text.split()[0].lower().lstrip("/").split("@")[0]
 
         if command in {"start", "help"}:
-            self._api.send_message(chat_id, escape(GREETING.format(org=settings.org_name)))
+            self._api.send_message(
+                chat_id, escape(GREETING.format(org=settings.org_name)),
+                reply_markup=menu.root_keyboard(),
+            )
+        elif command == "menu":
+            self._api.send_message(chat_id, escape(menu.ROOT_TEXT), reply_markup=menu.root_keyboard())
         elif command == "new":
             store.reset(f"tg-{chat_id}")
             self._states.pop(chat_id, None)
@@ -258,17 +272,22 @@ class TelegramBot:
                 self._api.send_message(chat_id, f"<pre>{escape(part)}</pre>", parse_mode="HTML")
         else:
             self._api.send_message(
-                chat_id, "Неизвестная команда. Есть /new, /status, /auth, /app, /check, /help."
+                chat_id, "Неизвестная команда. Есть /menu, /new, /status, /auth, /app, /check, /help."
             )
 
     # --- Mini App ---
 
     def _install_menu_button(self) -> None:
-        """Ставит кнопку «Открыть» только тем, кто в белом списке.
+        """Список команд и кнопка «Открыть» — только тем, кто в белом списке.
 
-        Кнопка для всех по умолчанию показала бы посторонним, что бот умеет
-        больше, чем молчать. Сбой здесь не мешает работе бота.
+        Показывать их всем по умолчанию значило бы сообщить посторонним, что
+        бот умеет больше, чем молчать. Сбой здесь не мешает работе бота.
         """
+        for user_id in self._allowed:
+            try:
+                self._api.set_my_commands(menu.BOT_COMMANDS, user_id)
+            except Exception as exc:  # noqa: BLE001 — список команд необязателен
+                logger.warning("Не удалось задать команды для %s: %s", user_id, exc)
         url = miniapp_url()
         if not url:
             return
@@ -277,6 +296,42 @@ class TelegramBot:
                 self._api.set_chat_menu_button(user_id, "Открыть", url)
             except Exception as exc:  # noqa: BLE001 — кнопка необязательна
                 logger.warning("Не удалось поставить кнопку Mini App для %s: %s", user_id, exc)
+
+    def _handle_menu(self, callback: dict[str, Any], chat_id: int, data: str) -> None:
+        """Кнопки меню: раздел → действия → запрос ассистенту или команда."""
+        message_id = callback["message"]["message_id"]
+        parts = data.split(":", 2)
+
+        if data == "m:root":
+            self._api.answer_callback_query(callback["id"])
+            self._api.edit_message_text(chat_id, message_id, escape(menu.ROOT_TEXT),
+                                        reply_markup=menu.root_keyboard())
+            return
+
+        if len(parts) == 3 and parts[1] == "c":
+            category = menu.category(parts[2])
+            if category is None:
+                self._api.answer_callback_query(callback["id"], "Раздел не найден.")
+                return
+            self._api.answer_callback_query(callback["id"])
+            self._api.edit_message_text(chat_id, message_id, f"<b>{escape(category.label)}</b>",
+                                        reply_markup=menu.category_keyboard(category.id))
+            return
+
+        action = menu.action(parts[2]) if len(parts) == 3 and parts[1] == "a" else None
+        if action is None:
+            self._api.answer_callback_query(callback["id"], "Кнопка устарела — откройте /menu.")
+            return
+
+        self._api.answer_callback_query(callback["id"], action.label)
+        if action.kind == "hint":
+            self._api.send_message(chat_id, escape(action.payload))
+        elif action.kind == "cmd":
+            self._handle_command(chat_id, "/" + action.payload)
+        else:
+            # Показываем, что именно спросили: ответ без вопроса читается хуже.
+            self._api.send_message(chat_id, f"<i>{escape(action.payload)}</i>")
+            self._handle_text(chat_id, action.payload, from_menu=True)
 
     def _handle_check(self, chat_id: int) -> None:
         """Самопроверка прямо в чате — когда под рукой нет компьютера."""
@@ -617,6 +672,9 @@ class TelegramBot:
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         data = callback.get("data", "")
         chat_id = callback["message"]["chat"]["id"]
+        if data.startswith("m:"):
+            self._handle_menu(callback, chat_id, data)
+            return
         state = self._states.get(chat_id)
 
         if not state or ":" not in data:

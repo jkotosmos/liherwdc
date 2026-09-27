@@ -11,7 +11,7 @@ from app.config import settings
 from app.sessions import store
 from app.telegram import bot as bot_module
 from app.telegram.api import TelegramError
-from app.telegram.bot import TelegramBot
+from app.telegram.bot import ChatState, TelegramBot
 from app.telegram.format import split_message, to_telegram_html
 
 ALLOWED = 100500
@@ -803,3 +803,77 @@ class TestCheckCommand:
         bot._handle_update(message("/routerai"))
         assert api.texts()[-1].startswith("<pre>")
         assert "&quot;usage&quot;" in api.texts()[-1] or '"usage"' in api.texts()[-1]
+
+
+class TestMenu:
+    def _bot(self, monkeypatch):
+        agent = FakeAgent([{"type": "text_delta", "text": "Ответ."}, {"type": "done", "stop": "end_turn"}])
+        asked = []
+        original = agent.send_user_message
+
+        def spy(session, text):
+            asked.append(text)
+            yield from original(session, text)
+
+        agent.send_user_message = spy
+        bot, api = make_bot(agent, monkeypatch)
+        return bot, api, asked
+
+    def test_menu_command_shows_categories(self, monkeypatch) -> None:
+        bot, api, _ = self._bot(monkeypatch)
+        bot._handle_update(message("/menu"))
+        labels = [b["text"] for row in api.keyboards()[-1]["inline_keyboard"] for b in row]
+        assert "📅 Календарь" in labels and "⚙️ Сервис" in labels
+
+    def test_start_shows_menu_too(self, monkeypatch) -> None:
+        bot, api, _ = self._bot(monkeypatch)
+        bot._handle_update(message("/start"))
+        assert api.keyboards(), "приветствие приходит с кнопками разделов"
+
+    def test_category_opens_actions_in_place(self, monkeypatch) -> None:
+        bot, api, _ = self._bot(monkeypatch)
+        bot._handle_update(callback("m:c:cal"))
+        edits = [p for m, p in api.calls if m == "edit"]
+        assert edits and "Календарь" in edits[-1]["text"]
+
+    def test_ask_action_goes_to_assistant(self, monkeypatch) -> None:
+        from app.telegram import menu
+
+        bot, api, asked = self._bot(monkeypatch)
+        bot._handle_update(callback("m:a:t_overdue"))
+        assert asked == [menu.action("t_overdue").payload]
+        assert any("Ответ." in t for t in api.texts() + api.texts("edit"))
+
+    def test_hint_action_does_not_call_assistant(self, monkeypatch) -> None:
+        bot, api, asked = self._bot(monkeypatch)
+        bot._handle_update(callback("m:a:cal_new"))
+        assert asked == []
+        assert "подтверждения" in api.texts()[-1]
+
+    def test_command_action_runs_command(self, monkeypatch) -> None:
+        bot, api, asked = self._bot(monkeypatch)
+        bot._handle_update(callback("m:a:s_new"))
+        assert "Диалог очищен" in api.texts()[-1]
+        assert asked == []
+
+    def test_menu_button_cancels_waiting_for_google_code(self, monkeypatch) -> None:
+        bot, api, asked = self._bot(monkeypatch)
+        state = bot._states.setdefault(1, ChatState())
+        state.oauth_started_at = 1.0
+        bot._handle_update(callback("m:a:cal_today"))
+        assert state.oauth_started_at is None
+        assert len(asked) == 1, "запрос из меню не должен приниматься за код Google"
+
+    def test_stale_button(self, monkeypatch) -> None:
+        bot, api, _ = self._bot(monkeypatch)
+        bot._handle_update(callback("m:a:нет_такого"))
+        assert [p for m, p in api.calls if m == "answer_callback"][-1]["text"].startswith("Кнопка устарела")
+
+    def test_callback_data_fits_telegram_limit(self) -> None:
+        from app.telegram import menu
+
+        keyboards = [menu.root_keyboard()] + [menu.category_keyboard(c.id) for c in menu.CATEGORIES]
+        for keyboard in keyboards:
+            for row in keyboard["inline_keyboard"]:
+                for button in row:
+                    assert len(button["callback_data"].encode()) <= 64
