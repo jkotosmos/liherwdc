@@ -476,6 +476,23 @@ async function streamRequest(url, body, turn) {
   turn.finishText();
 }
 
+function attachmentLink(event) {
+  // Готовый документ (КП, отчёт, расчёт). В Mini App скачивает загрузчик
+  // Telegram: обычная ссылка во встроенном браузере файл не сохраняет.
+  const link = document.createElement("a");
+  link.className = "attachment";
+  link.href = `/api/files/${encodeURIComponent(event.id)}`;
+  link.download = event.name || "document";
+  link.textContent = `📎 ${event.name || "Документ"} — скачать`;
+  if (inTelegram && tg.downloadFile) {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      tg.downloadFile({ url: new URL(link.href, window.location.href).href, file_name: link.download });
+    });
+  }
+  return link;
+}
+
 function handleEvent(event, turn) {
   switch (event.type) {
     case "session":
@@ -513,6 +530,9 @@ function handleEvent(event, turn) {
             .finally(() => setBusy(false));
         })
       );
+      break;
+    case "attachment":
+      turn.mount(attachmentLink(event));
       break;
     case "done":
       break;

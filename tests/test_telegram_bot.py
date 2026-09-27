@@ -877,3 +877,19 @@ class TestMenu:
             for row in keyboard["inline_keyboard"]:
                 for button in row:
                     assert len(button["callback_data"].encode()) <= 64
+
+
+def test_attachment_is_sent_as_document(monkeypatch) -> None:
+    from app.tools import outbox as outbox_module
+
+    agent = FakeAgent([
+        {"type": "attachment", "id": "f1", "name": "КП.docx"},
+        {"type": "text_delta", "text": "КП в файле."},
+        {"type": "done", "stop": "end_turn"},
+    ])
+    bot, api = make_bot(agent, monkeypatch)
+    monkeypatch.setattr(outbox_module, "get", lambda file_id: {"path": "/tmp/x.docx", "name": "КП.docx"})
+    sent = []
+    api.send_document = lambda chat_id, path, name, caption="": sent.append((chat_id, name))
+    bot._handle_update(message("подготовь КП"))
+    assert sent == [(1, "КП.docx")]

@@ -303,3 +303,11 @@ html, body {
 .model-item .m-flag { font-size: 11px; color: var(--warn); }
 
 .hidden { display: none !important; }
+
+/* --- готовый документ в ответе --- */
+.attachment {
+  display: inline-block; margin-top: 8px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); color: var(--accent); text-decoration: none; font-weight: 500;
+}
+.attachment:hover { background: var(--accent-soft); }

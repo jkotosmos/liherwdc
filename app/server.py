@@ -27,7 +27,7 @@ from .kb import knowledge_base
 from .sessions import store
 from .telegram import webapp
 from .telegram.format import escape
-from .tools import registry
+from .tools import outbox, registry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -195,7 +195,15 @@ def _stream_response(events: Iterator[dict[str, Any]]) -> StreamingResponse:
 async def require_authentication(request: Request, call_next):
     """Пропускает запрос только с действующей кукой, если задан пароль."""
     path = request.url.path
-    if not settings.auth_required or path in PUBLIC_PATHS or path.startswith("/static/"):
+    # /api/files/<id>: ссылка-ключ на готовый документ (id — 24 случайных знака,
+    # живёт неделю). Без неё не скачать файл из Mini App: загрузчик Telegram
+    # не передаёт заголовок авторизации.
+    if (
+        not settings.auth_required
+        or path in PUBLIC_PATHS
+        or path.startswith("/static/")
+        or path.startswith("/api/files/")
+    ):
         return await call_next(request)
 
     if auth.token_is_valid(request.cookies.get(auth.COOKIE_NAME)):
@@ -437,6 +445,14 @@ def health(strict: bool = False) -> JSONResponse:
         "telegram": bot,
     }
     return JSONResponse(payload, status_code=503 if (strict and not healthy) else 200)
+
+
+@app.get("/api/files/{file_id}")
+def download(file_id: str) -> FileResponse:
+    meta = outbox.get(file_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Файл не найден или срок хранения истёк.")
+    return FileResponse(meta["path"], filename=meta["name"], media_type=meta.get("mime"))
 
 
 @app.get("/")

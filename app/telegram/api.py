@@ -62,6 +62,25 @@ class TelegramAPI:
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
+    def send_document(self, chat_id: int, path: str, filename: str, caption: str = "") -> Any:
+        """Отправляет файл документом (multipart: JSON для файлов не годится)."""
+        try:
+            with open(path, "rb") as handle:
+                response = self._client.post(
+                    f"{self._url}/sendDocument",
+                    data={"chat_id": str(chat_id), "caption": caption[:1000]},
+                    files={"document": (filename, handle)},
+                )
+        except (OSError, httpx.HTTPError) as exc:
+            raise TelegramError(f"Не удалось отправить файл: {explain(exc)}") from exc
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise TelegramError(f"sendDocument: ответ не в формате JSON ({response.status_code})") from exc
+        if not data.get("ok"):
+            raise TelegramError(f"sendDocument: {data.get('description', response.status_code)}")
+        return data.get("result")
+
     def set_my_commands(self, commands: list[dict[str, str]], chat_id: int) -> None:
         """Подсказки команд при вводе «/» — в конкретном чате."""
         self._call(

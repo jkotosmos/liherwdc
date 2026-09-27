@@ -27,6 +27,7 @@ from ..sessions import store
 from .. import reminders
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
+from ..tools import outbox
 from . import menu
 from .webapp import miniapp_url
 
@@ -588,6 +589,7 @@ class TelegramBot:
         activity: list[str] = []
         notices: list[str] = []
         pending_actions: list[dict[str, Any]] = []
+        attachments: list[dict[str, Any]] = []
         last_edit = 0.0
 
         for event in events:
@@ -610,6 +612,8 @@ class TelegramBot:
                 notices.append(("⚠️ " if kind == "warning" else "❌ ") + event["message"])
             elif kind == "confirmation_required":
                 pending_actions = event["actions"]
+            elif kind == "attachment":
+                attachments.append(event)
 
         text = "".join(answer).strip()
         body = to_telegram_html(text) if text else ""
@@ -622,6 +626,15 @@ class TelegramBot:
         self._api.edit_message_text(chat_id, message_id, chunks[0])
         for chunk in chunks[1:]:
             self._api.send_message(chat_id, chunk)
+
+        for attachment in attachments:
+            meta = outbox.get(attachment["id"])
+            if meta is None:
+                continue
+            try:
+                self._api.send_document(chat_id, meta["path"], meta["name"])
+            except TelegramError as exc:
+                self._api.send_message(chat_id, "❌ " + escape(str(exc)))
 
         if pending_actions:
             self._send_confirmations(chat_id, pending_actions)

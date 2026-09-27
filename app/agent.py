@@ -462,6 +462,9 @@ class OperonAgent:
                     "ok": not is_error,
                     "summary": self._summarize(block.name, content, is_error),
                 }
+                attachment = self._attachment(content, is_error)
+                if attachment:
+                    yield {"type": "attachment", **attachment}
                 results.append(self._tool_result(block.id, content, is_error))
 
             if pending_actions:
@@ -636,6 +639,19 @@ class OperonAgent:
         if status == "deleted":
             return "Удалено"
         return "Готово"
+
+    @staticmethod
+    def _attachment(content: str, is_error: bool) -> dict[str, Any] | None:
+        """Файл, подготовленный инструментом (document_prepare), — для доставки в чат."""
+        if is_error or '"attachment"' not in content:
+            return None
+        try:
+            attachment = json.loads(content).get("attachment")
+        except (json.JSONDecodeError, AttributeError):
+            return None
+        if isinstance(attachment, dict) and attachment.get("id"):
+            return {"id": attachment["id"], "name": attachment.get("name", "document")}
+        return None
 
     def _runtime_context(self) -> str:
         return runtime_context(
