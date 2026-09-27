@@ -19,14 +19,14 @@ from typing import Any
 import httpx
 
 from ..config import settings
-from ..net import explain, ssl_context
+from ..net import explain, http_options
 from ..search_keys import PROVIDER_KEYS, damaged_keys, provider_usable
 from . import free_search
 from .base import ToolError, ToolSpec, registry
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+TIMEOUT = httpx.Timeout(30.0, connect=20.0)
 MAX_PAGE_CHARS = 40_000
 
 NOT_CONFIGURED = (
@@ -76,7 +76,7 @@ def _tavily(query: str, limit: int) -> list[dict[str, str]]:
             "search_depth": "basic",
         },
         timeout=TIMEOUT,
-        verify=ssl_context(),
+        **http_options(),
     )
     response.raise_for_status()
     return [
@@ -95,7 +95,7 @@ def _brave(query: str, limit: int) -> list[dict[str, str]]:
             "Accept": "application/json",
         },
         timeout=TIMEOUT,
-        verify=ssl_context(),
+        **http_options(),
     )
     response.raise_for_status()
     results = response.json().get("web", {}).get("results", [])
@@ -112,7 +112,7 @@ def _serper(query: str, limit: int) -> list[dict[str, str]]:
         json={"q": query, "num": limit},
         headers={"X-API-KEY": os.environ["SERPER_API_KEY"]},
         timeout=TIMEOUT,
-        verify=ssl_context(),
+        **http_options(),
     )
     response.raise_for_status()
     return [
@@ -132,7 +132,7 @@ def _google_cse(query: str, limit: int) -> list[dict[str, str]]:
             "num": min(limit, 10),
         },
         timeout=TIMEOUT,
-        verify=ssl_context(),
+        **http_options(),
     )
     response.raise_for_status()
     return [
@@ -283,7 +283,7 @@ def _open_url(tool_input: dict[str, Any]) -> Any:
             # Браузерный заголовок: многие сайты (госорганы, СМИ) отдают
             # пустую страницу или 403 «ботам» с нестандартным User-Agent.
             headers=free_search.HEADERS,
-            verify=ssl_context(),
+            **http_options(),
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:

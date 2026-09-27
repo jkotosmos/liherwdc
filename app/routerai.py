@@ -20,9 +20,9 @@ from typing import Any
 import httpx
 
 from .config import settings
-from .net import explain, ssl_context
+from .net import explain, http_options
 
-TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+TIMEOUT = httpx.Timeout(20.0, connect=15.0)
 CATALOG_TTL_SECONDS = 600
 
 # Шлюзы с API в духе OpenRouter. У прочих каталога и баланса может не быть.
@@ -57,7 +57,7 @@ def _get(path: str, client: httpx.Client | None = None) -> Any:
         if client is not None:
             response = client.get(url, headers=headers)
         else:
-            response = httpx.get(url, headers=headers, timeout=TIMEOUT, verify=ssl_context())
+            response = httpx.get(url, headers=headers, timeout=TIMEOUT, **http_options())
     except httpx.HTTPError as exc:
         raise BillingError(f"Шлюз недоступен ({path}): {explain(exc)}") from exc
     if response.status_code == 401:

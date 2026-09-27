@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 
 from .config import settings
-from .net import explain, ssl_context
+from .net import explain, http_options
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class OpenAICompatBackend:
         # Заголовки ставим в обоих случаях: иначе проверка с заглушкой шла бы
         # без авторизации и не отражала настоящий запрос.
         if client is None:
-            self._client = httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT, verify=ssl_context())
+            self._client = httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT, **http_options())
         else:
             self._client = client
             self._client.headers.update(headers)

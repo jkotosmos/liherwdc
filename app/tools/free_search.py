@@ -27,11 +27,11 @@ from xml.etree import ElementTree
 
 import httpx
 
-from ..net import is_certificate_error, ssl_context
+from ..net import http_options, is_certificate_error
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = httpx.Timeout(12.0, connect=6.0)
+TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 # Обычный браузерный заголовок: с «ботовым» поисковики отдают пустую страницу.
 HEADERS = {
     "User-Agent": (
@@ -61,7 +61,7 @@ def _get(url: str, client: httpx.Client | None, **params: Any) -> httpx.Response
         else:
             response = httpx.get(
                 url, params=params, headers=HEADERS, timeout=TIMEOUT,
-                follow_redirects=True, verify=ssl_context(),
+                follow_redirects=True, **http_options(),
             )
     except httpx.HTTPError as exc:
         if is_certificate_error(exc):

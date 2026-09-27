@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from ..net import explain, ssl_context
+from ..net import explain, http_options
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,8 @@ class TelegramAPI:
             raise TelegramError("Не задан TELEGRAM_BOT_TOKEN")
         self._token = token
         self._url = f"{BASE}/bot{token}"
-        self._timeout = httpx.Timeout(timeout, connect=15.0)
-        self._client = httpx.Client(timeout=self._timeout, verify=ssl_context())
+        self._timeout = httpx.Timeout(timeout, connect=30.0)
+        self._client = httpx.Client(timeout=self._timeout, **http_options())
 
     def close(self) -> None:
         self._client.close()

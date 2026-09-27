@@ -25,7 +25,7 @@ from .search_keys import GOOGLE_CSE_SHUTDOWN, SEARCH_KEY_VARIABLES  # noqa: F401
 from .search_keys import damaged_keys as _damaged_keys
 from .config import settings
 from .model_choice import current_model
-from .net import ssl_context
+from .net import http_options
 
 TIMEOUT = 25.0
 
@@ -46,7 +46,7 @@ class Check:
 
 
 def _http(url: str, **kwargs: Any) -> httpx.Response:
-    return httpx.get(url, timeout=TIMEOUT, verify=ssl_context(), **kwargs)
+    return httpx.get(url, timeout=TIMEOUT, **http_options(), **kwargs)
 
 
 # --- настройки --------------------------------------------------------------
@@ -67,6 +67,19 @@ def check_settings() -> list[Check]:
                 blocking=True,
             )
         )
+
+    from .net import describe_proxy, proxy_setting
+
+    via = describe_proxy()
+    if via:
+        checks.append(Check(
+            "Прокси", OK, via,
+            ["Все запросы бота идут через этот прокси. Если ниже таймауты "
+             "(«handshake operation timed out») — прокси или VPN нестабилен: "
+             "проверьте его или пустите бота напрямую строкой OPERON_PROXY=none в .env."],
+        ))
+    elif proxy_setting().lower() in {"none", "off", "direct", "нет"}:
+        checks.append(Check("Прокси", OK, "не используется (OPERON_PROXY=none)"))
 
     if current_model(settings):
         chosen = current_model(settings)
@@ -364,7 +377,7 @@ def _granted_scopes() -> set[str] | None:
             "https://oauth2.googleapis.com/tokeninfo",
             params={"access_token": creds.token},
             timeout=15,
-            verify=ssl_context(),
+            **http_options(),
         )
         if response.status_code != 200:
             return None
