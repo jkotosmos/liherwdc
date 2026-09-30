@@ -155,6 +155,8 @@ class Settings:
     # инструмент срабатывает только в ответ на реплику пользователя.
     digest_hour: int = _int("OPERON_DIGEST_HOUR", 9)
     remind_before_days: int = _int("OPERON_REMIND_BEFORE_DAYS", 2)
+    # За сколько минут до встречи из календаря бот пишет в Telegram. 0 — не писать.
+    meeting_remind_minutes: int = _int("OPERON_MEETING_REMIND_MINUTES", 30)
 
     # --- Ограничения ---
     max_history_messages: int = _int("OPERON_MAX_HISTORY", 200)
@@ -445,6 +447,10 @@ class Settings:
     @property
     def reminders_path(self) -> Path:
         return self.data_dir / "reminders.json"
+
+    @property
+    def personal_reminders_path(self) -> Path:
+        return self.data_dir / "personal_reminders.json"
 
     @property
     def kpi_path(self) -> Path:

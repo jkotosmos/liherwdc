@@ -595,7 +595,12 @@ class TelegramBot:
             lines.append(
                 f"Напоминания: сводка в {rem['digest_hour']}:00, "
                 f"предупреждение за {rem['remind_before_days']} дн., "
-                f"тишина {rem['quiet_hours']}"
+                + (
+                    f"о встречах за {rem['meeting_remind_minutes']} мин, "
+                    if rem["meeting_remind_minutes"] > 0
+                    else ""
+                )
+                + f"тишина {rem['quiet_hours']}"
             )
         else:
             lines.append("Напоминания: выключены")

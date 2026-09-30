@@ -442,7 +442,10 @@ class OperonAgent:
                 tool_input = dict(block.input or {})
 
                 if spec is not None and spec.requires_confirmation:
-                    preview = spec.build_preview(tool_input).as_dict()
+                    # Карточка может читать данные пользователя (название встречи) —
+                    # под его учётной записью, как и сам инструмент.
+                    with accounts.use(session.account):
+                        preview = spec.build_preview(tool_input).as_dict()
                     pending_actions.append(
                         PendingAction(
                             tool_use_id=block.id,

@@ -82,6 +82,25 @@ def list_events_between(day_from: date, day_to: date, calendar_id: str = "primar
     return [_event_view(e, calendar_id) for e in events]
 
 
+def list_events_window(start: datetime, end: datetime, calendar_id: str = "primary") -> list[dict[str, Any]]:
+    """События, начинающиеся в интервале, — для напоминаний о встречах."""
+    events = (
+        _calendar()
+        .events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=20,
+        )
+        .execute()
+        .get("items", [])
+    )
+    return [_event_view(e, calendar_id) for e in events]
+
+
 def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
     calendar_id = (tool_input.get("calendar_id") or "primary").strip()
     now = datetime.now(settings.tz)
@@ -220,6 +239,24 @@ def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
             if len(end) == 10
             else {"dateTime": _to_rfc3339(end), "timeZone": settings.timezone_name}
         )
+    elif "start" in patch:
+        # Перенесли начало без конца — сохраняем длительность. Иначе встреча
+        # «с 15 до 11» и Google отказывает, или она растягивается на полдня.
+        kept = _shifted_end(current, patch["start"])
+        if kept:
+            patch["end"] = kept
+    if tool_input.get("reminder_minutes") is not None:
+        patch["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": int(tool_input["reminder_minutes"])}],
+        }
+    new_attendees = [e for e in (tool_input.get("add_attendees") or []) if e]
+    if new_attendees:
+        existing = current.get("attendees", [])
+        known = {(a.get("email") or "").lower() for a in existing}
+        patch["attendees"] = existing + [
+            {"email": e} for e in new_attendees if e.lower() not in known
+        ]
     if not patch:
         raise ToolError("Не переданы поля для изменения.")
 
@@ -237,6 +274,25 @@ def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
         "previous": _event_view(current, calendar_id),
         "current": _event_view(updated, calendar_id),
     }
+
+
+def _shifted_end(current: dict[str, Any], new_start: dict[str, Any]) -> dict[str, Any] | None:
+    old_start, old_end = current.get("start", {}), current.get("end", {})
+    try:
+        if "dateTime" in new_start and old_start.get("dateTime") and old_end.get("dateTime"):
+            length = datetime.fromisoformat(old_end["dateTime"].replace("Z", "+00:00")) - datetime.fromisoformat(
+                old_start["dateTime"].replace("Z", "+00:00")
+            )
+            begin = datetime.fromisoformat(new_start["dateTime"])
+            return {"dateTime": (begin + length).isoformat(), "timeZone": settings.timezone_name}
+        if "date" in new_start and old_start.get("date") and old_end.get("date"):
+            length = date.fromisoformat(old_end["date"]) - date.fromisoformat(old_start["date"])
+            return {"date": (date.fromisoformat(new_start["date"]) + length).isoformat()}
+    except ValueError:
+        return None
+    if "date" in new_start:
+        return {"date": (date.fromisoformat(new_start["date"]) + timedelta(days=1)).isoformat()}
+    return None
 
 
 def _calendar_delete_event(tool_input: dict[str, Any]) -> Any:
@@ -280,27 +336,56 @@ def _preview_create(tool_input: dict[str, Any]) -> Preview:
     )
 
 
+def _describe_event(tool_input: dict[str, Any]) -> str:
+    """«Название, начало» — чтобы в карточке было видно, какую встречу трогаем.
+
+    Карточка строится до подтверждения; чтение события ничего не меняет.
+    Не прочиталось — показываем идентификатор, как раньше.
+    """
+    event_id = (tool_input.get("event_id") or "").strip()
+    try:
+        event = _calendar().events().get(
+            calendarId=(tool_input.get("calendar_id") or "primary").strip(), eventId=event_id
+        ).execute()
+    except Exception:  # noqa: BLE001 — карточка должна показаться в любом случае
+        return f"Событие {event_id or '?'}"
+    start = event.get("start", {})
+    when = (start.get("dateTime") or start.get("date") or "").replace("T", " ")[:16]
+    return f"«{event.get('summary', '(без названия)')}» ({when})"
+
+
+_UPDATE_LABELS = {
+    "title": "Новое название",
+    "start": "Новое начало",
+    "end": "Новое окончание",
+    "description": "Описание",
+    "location": "Место",
+    "reminder_minutes": "Напоминание, мин",
+    "add_attendees": "Добавить участников",
+}
+
+
 def _preview_update(tool_input: dict[str, Any]) -> Preview:
     changes = {
-        key: value
+        _UPDATE_LABELS.get(key, key): (", ".join(value) if isinstance(value, list) else value)
         for key, value in tool_input.items()
-        if key not in {"event_id", "calendar_id"} and value not in (None, "")
+        if key not in {"event_id", "calendar_id"} and value not in (None, "", [])
     }
+    event = _describe_event(tool_input)
     return Preview(
         title="Изменить событие в календаре",
-        summary=f"Событие {tool_input.get('event_id', '?')} будет изменено; участники получат уведомление.",
-        details={"Календарь": tool_input.get("calendar_id") or "primary", **changes},
+        summary=f"{event} будет изменено; участники получат уведомление.",
+        details={"Событие": event, "Календарь": tool_input.get("calendar_id") or "primary", **changes},
     )
 
 
 def _preview_delete(tool_input: dict[str, Any]) -> Preview:
+    event = _describe_event(tool_input)
     return Preview(
         title="Удалить событие из календаря",
-        summary=(
-            f"Событие {tool_input.get('event_id', '?')} будет удалено безвозвратно, "
-            "участникам уйдёт отмена."
-        ),
+        summary=f"{event} будет удалено безвозвратно, участникам уйдёт отмена.",
         details={
+            "Событие": event,
             "Календарь": tool_input.get("calendar_id") or "primary",
             "Идентификатор события": tool_input.get("event_id", ""),
         },
@@ -394,7 +479,9 @@ registry.register(
     ToolSpec(
         name="calendar_update_event",
         description=(
-            "Изменяет существующее событие календаря (перенос, смена названия, места, описания). "
+            "Изменяет существующее событие календаря: перенос (достаточно нового start — "
+            "длительность сохранится), название, место, описание, напоминание, новые участники. "
+            "event_id бери из calendar_list_events (ищи по названию через query). "
             "Выполняется только после подтверждения пользователя; участники получат уведомление."
         ),
         input_schema={
@@ -414,6 +501,12 @@ registry.register(
                 "end": {"type": "string"},
                 "description": {"type": "string"},
                 "location": {"type": "string"},
+                "reminder_minutes": {"type": "integer", "description": "За сколько минут напомнить (уведомление Google)."},
+                "add_attendees": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "E-mail новых участников — им уйдут приглашения.",
+                },
             },
             "required": ["event_id"],
         },
@@ -428,8 +521,8 @@ registry.register(
     ToolSpec(
         name="calendar_delete_event",
         description=(
-            "Удаляет событие из календаря. Необратимое действие, выполняется только после "
-            "подтверждения пользователя."
+            "Удаляет (отменяет) событие из календаря. event_id бери из calendar_list_events. "
+            "Необратимое действие, выполняется только после подтверждения пользователя."
         ),
         input_schema={
             "type": "object",

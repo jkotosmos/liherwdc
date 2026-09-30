@@ -35,6 +35,8 @@ class TestRegistry:
             "calendar_update_event",
             "calendar_delete_event",
             "drive_create_file",
+            "reminder_create",
+            "reminder_cancel",
             "task_create",
             "task_update",
             "kpi_upsert",
