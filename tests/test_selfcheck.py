@@ -145,10 +145,10 @@ class TestTelegramCheck:
             ),
         )
         monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
-        checks = selfcheck.check_telegram()
-        assert checks[0].status == OK
-        assert checks[1].status == FAIL
-        assert "userinfobot" in " ".join(checks[1].hints)
+        checks = {c.name: c for c in selfcheck.check_telegram()}
+        assert checks["Telegram: токен"].status == OK
+        assert checks["Telegram: белый список"].status == FAIL
+        assert "userinfobot" in " ".join(checks["Telegram: белый список"].hints)
 
 
 class TestKnowledgeBaseCheck:
@@ -363,3 +363,29 @@ class TestCertificateTrust:
             assert "антивирус" in str(exc)
         else:
             raise AssertionError("ожидалась LLMError")
+
+
+
+class TestWebhookCheck:
+    def _run(self, monkeypatch, webhook: dict):
+        import httpx
+
+        monkeypatch.setattr(selfcheck, "settings", replace(settings, telegram_token="1:good"))
+
+        def fake(url, **kw):
+            body = {"ok": True, "result": webhook} if url.endswith("getWebhookInfo") else \
+                {"ok": True, "result": {"username": "operon_bot"}}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(selfcheck, "_http", fake)
+        return {c.name: c for c in selfcheck.check_telegram()}
+
+    def test_webhook_from_old_platform_is_named(self, monkeypatch) -> None:
+        """Бот «не реагирует»: сообщения уходят на webhook прежней платформы."""
+        checks = self._run(monkeypatch, {"url": "https://old.platform/hook", "pending_update_count": 4})
+        check = checks["Telegram: webhook"]
+        assert check.status == WARN
+        assert "old.platform" in check.detail and "4" in check.detail
+
+    def test_no_webhook_is_ok(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, {"url": ""})["Telegram: webhook"].status == OK

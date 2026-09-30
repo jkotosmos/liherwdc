@@ -893,3 +893,57 @@ def test_attachment_is_sent_as_document(monkeypatch) -> None:
     api.send_document = lambda chat_id, path, name, caption="": sent.append((chat_id, name))
     bot._handle_update(message("подготовь КП"))
     assert sent == [(1, "КП.docx")]
+
+
+
+class TestWebhookTakeover:
+    def test_webhook_is_removed_on_start(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        removed = []
+        api.get_webhook_info = lambda: {"url": "https://old.platform/hook", "pending_update_count": 2}
+        api.delete_webhook = lambda: removed.append(True)
+        bot._take_over_from_webhook()
+        assert removed == [True]
+
+    def test_no_webhook_nothing_removed(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        removed = []
+        api.get_webhook_info = lambda: {"url": ""}
+        api.delete_webhook = lambda: removed.append(True)
+        bot._take_over_from_webhook()
+        assert removed == []
+
+    def test_check_failure_does_not_stop_bot(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+
+        def broken():
+            raise TelegramError("сеть")
+
+        api.get_webhook_info = broken
+        bot._take_over_from_webhook()  # не бросает
+
+
+def test_409_webhook_explained() -> None:
+    import httpx
+
+    from app.telegram.api import TelegramAPI
+
+    def handler(request):
+        return httpx.Response(409, json={"ok": False, "description":
+            "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first"})
+
+    api = TelegramAPI("123:abc")
+    api._client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(TelegramError, match="webhook"):
+        api.get_updates(None, 0)
+
+
+def test_stranger_logged_with_real_id(monkeypatch, caplog) -> None:
+    """«Бот молчит» чаще всего — не тот ID в списке; журнал должен назвать настоящий."""
+    import logging
+
+    bot, api = make_bot(FakeAgent([]), monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        bot._handle_update(message("привет", user_id=STRANGER))
+    assert api.calls == []
+    assert str(STRANGER) in caplog.text and "TELEGRAM_ALLOWED_USERS" in caplog.text

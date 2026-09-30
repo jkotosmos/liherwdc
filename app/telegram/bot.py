@@ -119,6 +119,7 @@ class TelegramBot:
             len(self._allowed),
         )
 
+        self._take_over_from_webhook()
         self._install_menu_button()
 
         backoff = 1.0
@@ -154,6 +155,26 @@ class TelegramBot:
 
         logger.info("Telegram-бот остановлен")
 
+    def _take_over_from_webhook(self) -> None:
+        """Снимает webhook, если бот раньше работал на другой платформе.
+
+        Пока webhook включён, Telegram отдаёт сообщения только на его адрес,
+        а getUpdates отвечает 409 — бот молчал бы, хотя запущен и исправен.
+        Перенос бота сюда и есть решение забрать его, поэтому снимаем сами
+        и пишем в журнал, откуда забрали.
+        """
+        try:
+            info = self._api.get_webhook_info()
+            url = info.get("url") if isinstance(info, dict) else ""
+            if url:
+                logger.warning(
+                    "На боте был webhook %s (ожидало %s сообщений) — снимаю: бот работает здесь",
+                    url, info.get("pending_update_count", 0),
+                )
+                self._api.delete_webhook()
+        except Exception as exc:  # noqa: BLE001 — без этого бот всё равно попробует читать
+            logger.warning("Не удалось проверить webhook: %s", exc)
+
     # --- маршрутизация ---
 
     def _allowed_user(self, update: dict[str, Any]) -> int | None:
@@ -162,8 +183,10 @@ class TelegramBot:
         user_id = user.get("id")
         if user_id in self._allowed:
             return user_id
-        logger.info(
-            "Проигнорировано сообщение от постороннего пользователя id=%s (%s)",
+        # WARNING, а не INFO: «бот молчит» чаще всего значит, что ID в белом
+        # списке записан не тот, — эта строка в журнале называет настоящий.
+        logger.warning(
+            "Проигнорировано сообщение от id=%s (@%s): его нет в TELEGRAM_ALLOWED_USERS",
             user_id,
             user.get("username", ""),
         )

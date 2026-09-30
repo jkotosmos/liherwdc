@@ -213,6 +213,26 @@ def check_model() -> list[Check]:
 # --- Telegram ---------------------------------------------------------------
 
 
+def _webhook_check() -> list[Check]:
+    """Webhook от прежней платформы забирает сообщения себе — бот молчит."""
+    try:
+        info = _http(f"https://api.telegram.org/bot{settings.telegram_token}/getWebhookInfo").json()
+    except Exception:  # noqa: BLE001 — проверка вспомогательная
+        return []
+    result = info.get("result") or {}
+    url = result.get("url") or ""
+    if not url:
+        return [Check("Telegram: webhook", OK, "не установлен — сообщения получает этот бот")]
+    detail = f"установлен: {url}; ждут доставки: {result.get('pending_update_count', 0)}"
+    if result.get("last_error_message"):
+        detail += f"; последняя ошибка: {result['last_error_message']}"
+    return [Check(
+        "Telegram: webhook", WARN, detail,
+        ["Пока он стоит, сообщения уходят на этот адрес, а не нашему боту. "
+         "Бот снимет его сам при запуске (python run.py или start-windows.ps1)."],
+    )]
+
+
 def check_telegram() -> list[Check]:
     if not settings.telegram_token:
         return [Check("Telegram", SKIP, "TELEGRAM_BOT_TOKEN не задан — работает только веб")]
@@ -234,6 +254,7 @@ def check_telegram() -> list[Check]:
     if payload.get("ok"):
         bot = payload.get("result", {})
         checks.append(Check("Telegram: токен", OK, f"@{bot.get('username', '?')}"))
+        checks.extend(_webhook_check())
     else:
         return [
             Check(

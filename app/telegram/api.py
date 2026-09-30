@@ -50,6 +50,11 @@ class TelegramAPI:
             if response.status_code == 401:
                 raise TelegramError("Telegram отклонил токен бота (401). Проверьте TELEGRAM_BOT_TOKEN.")
             if response.status_code == 409:
+                if "webhook" in description.lower():
+                    raise TelegramError(
+                        "На боте включён webhook (409): сообщения уходят на другой адрес, "
+                        "а не этому боту. Бот снимает его при запуске — перезапустите бота."
+                    )
                 raise TelegramError(
                     "Другой экземпляр бота уже читает обновления (409). "
                     "Остановите его — Telegram отдаёт обновления только одному получателю."
@@ -61,6 +66,13 @@ class TelegramAPI:
 
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
+
+    def get_webhook_info(self) -> dict[str, Any]:
+        return self._call("getWebhookInfo") or {}
+
+    def delete_webhook(self) -> None:
+        # Накопившиеся сообщения не выбрасываем: бот ответит и на них.
+        self._call("deleteWebhook", {"drop_pending_updates": False})
 
     def send_document(self, chat_id: int, path: str, filename: str, caption: str = "") -> Any:
         """Отправляет файл документом (multipart: JSON для файлов не годится)."""
