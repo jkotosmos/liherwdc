@@ -23,3 +23,5 @@ knowledge_base/*
 !knowledge_base/README.md
 !knowledge_base/_templates/
 !knowledge_base/_templates/**
+bot.log
+bot.pid
