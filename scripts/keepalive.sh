@@ -8,7 +8,12 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PIDFILE="$DIR/bot.pid"
 
 running() {
-    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+    # Жив, не «зомби» и это именно наш бот (номер процесса могли переиспользовать).
+    pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
+    [ -n "$pid" ] || return 1
+    state="$(ps -o stat= -p "$pid" 2>/dev/null)" || return 1
+    case "$state" in ""|Z*) return 1 ;; esac
+    ps -o args= -p "$pid" 2>/dev/null | grep -q "run.py"
 }
 
 if [ "$1" = "stop" ]; then
