@@ -760,6 +760,7 @@ def probe(query: str = "тарифы", extra_models: tuple[str, ...] = ()) -> It
                         )
                 except QuantError as exc:
                     yield f"[{name}] индекс бота не построен: {exc}"
+    took()  # время поиска — отдельно от проверок выше
     yield f"Пробный поиск «{query}»…"
     result = search(query, limit=3)
     yield f"Пробный поиск: {result.get('status')}, {result.get('search_mode', '')}{took()}"
