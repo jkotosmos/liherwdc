@@ -54,6 +54,10 @@ class _Pending:
     created_at: float
     label: str
     account: str = ""
+    # Секрет PKCE: Google принимает код только вместе с ним. Библиотека кладёт
+    # его в тот объект Flow, что выдал ссылку, а обмен идёт в новом — поэтому
+    # храним здесь. Без него обмен падает с invalid_grant.
+    code_verifier: str = ""
     done: bool = False
     result: dict[str, Any] | None = None
     error: str = ""
@@ -181,7 +185,12 @@ def start(label: str = "") -> tuple[str, str]:
         _forget_stale()
         # Чей это /auth: код с публичного адреса возврата сохраним в токен
         # именно этого пользователя, а не того, кто окажется «текущим».
-        _pending[state] = _Pending(created_at=time.monotonic(), label=label, account=accounts.current())
+        _pending[state] = _Pending(
+            created_at=time.monotonic(),
+            label=label,
+            account=accounts.current(),
+            code_verifier=getattr(flow, "code_verifier", None) or "",
+        )
     return url, state
 
 
@@ -222,7 +231,7 @@ def handle_callback(code: str, state: str) -> dict[str, Any]:
 
     try:
         with accounts.use(entry.account):
-            result = exchange_code(code)
+            result = exchange_code(code, state=state)
     except OAuthError as exc:
         with _lock:
             entry.done = True
@@ -274,10 +283,31 @@ def extract_code(text: str) -> str:
     return code
 
 
-def exchange_code(text: str) -> dict[str, Any]:
-    """Обменивает код на токен и сохраняет его. Возвращает описание результата."""
+def _state_from(text: str) -> str:
+    raw = (text or "").strip().strip("<>\"'")
+    if "state=" not in raw:
+        return ""
+    query = urlparse(raw).query or raw.split("?", 1)[-1]
+    return (parse_qs(query).get("state") or [""])[0]
+
+
+def code_verifier_for(state: str) -> str:
+    with _lock:
+        entry = _pending.get(state or "")
+        return entry.code_verifier if entry else ""
+
+
+def exchange_code(text: str, state: str = "") -> dict[str, Any]:
+    """Обменивает код на токен и сохраняет его. Возвращает описание результата.
+
+    state — чья это ссылка: по нему находим секрет PKCE. Если пользователь
+    прислал адрес целиком, state берём из него.
+    """
     code = extract_code(text)
+    verifier = code_verifier_for(_state_from(text) or state)
     flow = _flow()
+    if verifier:
+        flow.code_verifier = verifier
     # Обмен идёт через requests: те же сертификаты и прокси, что у всего бота.
     # Иначе OPERON_PROXY=none здесь не действовал бы, и /auth падал бы на
     # нестабильном системном прокси при работающем боте.

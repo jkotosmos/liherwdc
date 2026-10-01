@@ -545,12 +545,16 @@ class TelegramBot:
             )
             return
 
-        self._clear_oauth(state)
+        oauth_state = state.oauth_state
         try:
-            result = google_oauth.exchange_code(text)
+            # Ссылку забываем только после обмена: в ней секрет PKCE, без него
+            # Google код не примет.
+            result = google_oauth.exchange_code(text, state=oauth_state)
         except google_oauth.OAuthError as exc:
             self._api.send_message(chat_id, "❌ " + escape(str(exc)))
             return
+        finally:
+            self._clear_oauth(state)
 
         self._report_connected(chat_id, result)
 

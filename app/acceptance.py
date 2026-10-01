@@ -249,7 +249,17 @@ def main() -> int:
     section("3. Изменения только после подтверждения")
 
     gated = {s.name for s in registry.all() if s.requires_confirmation}
-    say(len(gated) == 8, "Изменяющие инструменты под шлюзом", f"{len(gated)}: {', '.join(sorted(gated))}")
+    # Всё, что меняет данные или пишет вовне. Новый изменяющий инструмент без
+    # шлюза уронит эту строку — так и задумано.
+    expected = {
+        "calendar_create_event", "calendar_update_event", "calendar_delete_event",
+        "drive_create_file", "task_create", "task_update", "kpi_upsert", "protocol_save",
+        "reminder_create", "reminder_cancel",
+    }
+    writers_without_gate = expected - gated
+    say(not writers_without_gate, "Изменяющие инструменты под шлюзом",
+        f"{len(gated)}: {', '.join(sorted(gated))}"
+        + (f"; БЕЗ шлюза: {', '.join(sorted(writers_without_gate))}" if writers_without_gate else ""))
 
     agent = OperonAgent()
     agent._runtime_context = lambda: "контекст"

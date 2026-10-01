@@ -41,6 +41,9 @@ except ImportError as exc:  # pragma: no cover — зависит от окру�
 _lock = threading.Lock()
 # Кэш учётных данных — у каждого пользователя свой (integrations/accounts.py).
 _cached: dict[str, Any] = {}
+# Адрес учётной записи — тоже по пользователю. Без кэша каждый ответ бота и
+# каждая минутная проверка встреч стоили бы лишнего запроса к Диску.
+_emails: dict[str, str] = {}
 
 SETUP_HINT = (
     "Google для этого пользователя не подключён. Отправьте боту /auth и разрешите "
@@ -76,8 +79,8 @@ def _load_credentials() -> Any:
             )
         except (ValueError, json.JSONDecodeError) as exc:
             raise IntegrationUnavailable(
-                f"Файл токена Google повреждён ({exc}). Пройдите авторизацию заново: "
-                "python -m app.integrations.google_auth"
+                f"Файл токена Google повреждён ({exc}). Отправьте боту /auth и разрешите "
+                "доступ заново."
             ) from exc
 
         if not creds.valid:
@@ -86,23 +89,42 @@ def _load_credentials() -> Any:
                     creds.refresh(Request(session=configure_requests_session(requests.Session())))
                     token_store.save_token(creds.to_json())
                 except Exception as exc:  # noqa: BLE001
-                    raise IntegrationUnavailable(
-                        f"Не удалось обновить токен Google ({exc}). Пройдите авторизацию заново: "
-                        "python -m app.integrations.google_auth"
-                    ) from exc
+                    raise IntegrationUnavailable(refresh_error_message(exc)) from exc
             else:
                 raise IntegrationUnavailable(
                     "Токен Google недействителен и не может быть обновлён. "
-                    "Пройдите авторизацию заново: python -m app.integrations.google_auth"
+                    "Отправьте боту /auth и разрешите доступ заново."
                 )
 
         _cached[key] = creds
         return creds
 
 
+def refresh_error_message(exc: Exception) -> str:
+    """Почему не обновился токен — и что делать. Сеть и отозванный доступ лечатся по-разному."""
+    text = str(exc)
+    if "invalid_grant" in text or "expired or revoked" in text:
+        return (
+            "Google отозвал доступ бота (invalid_grant): токен истёк или отозван. Отправьте "
+            "боту /auth и разрешите доступ заново. Если это повторяется каждую неделю — "
+            "приложение в Google Cloud в режиме «Testing»: там токены живут 7 дней. "
+            "Переведите его в «In production» (Google Auth Platform → Audience → Publish app)."
+        )
+    if "invalid_client" in text or "unauthorized_client" in text:
+        return (
+            "Google не принял OAuth-клиент (invalid_client): в .env другие GOOGLE_CLIENT_ID / "
+            "GOOGLE_CLIENT_SECRET, чем при авторизации. Верните прежние или пройдите /auth заново."
+        )
+    return (
+        f"Не удалось связаться с Google для обновления доступа ({exc.__class__.__name__}: {text[:200]}). "
+        "Это сеть, а не права: повторите чуть позже; проверьте интернет и OPERON_PROXY."
+    )
+
+
 def reset_cache() -> None:
     with _lock:
         _cached.clear()
+        _emails.clear()
 
 
 def get_service(api: str, version: str) -> Any:
@@ -200,8 +222,16 @@ def status() -> dict[str, Any]:
 def _account_email() -> str:
     # Адрес берём у Диска: userinfo требует отдельного разрешения (email),
     # которого в наборе нет, и раньше этот запрос молча возвращал пустоту.
+    key = accounts.resolve()
+    with _lock:
+        if key in _emails:
+            return _emails[key]
     try:
         about = get_service("drive", "v3").about().get(fields="user(emailAddress)").execute()
-        return (about.get("user") or {}).get("emailAddress", "")
+        email = (about.get("user") or {}).get("emailAddress", "")
     except Exception:  # noqa: BLE001 — необязательная информация
         return ""
+    if email:
+        with _lock:
+            _emails[key] = email
+    return email

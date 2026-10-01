@@ -203,7 +203,7 @@ class TestStateGate:
         monkeypatch.setattr(
             google_oauth,
             "exchange_code",
-            lambda text: {"encrypted": True, "scopes": [], "missing_scopes": [], "account": "a@b.c"},
+            lambda text, state="": {"encrypted": True, "scopes": [], "missing_scopes": [], "account": "a@b.c"},
         )
         google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
 
@@ -216,7 +216,7 @@ class TestStateGate:
         monkeypatch.setattr(
             google_oauth,
             "exchange_code",
-            lambda text: {"encrypted": True, "scopes": [], "missing_scopes": [], "account": ""},
+            lambda text, state="": {"encrypted": True, "scopes": [], "missing_scopes": [], "account": ""},
         )
         google_oauth.handle_callback("4/0Axyz_abcdefghijkl", state)
         with pytest.raises(google_oauth.OAuthError, match="уже использована"):
@@ -225,7 +225,7 @@ class TestStateGate:
     def test_failed_exchange_is_remembered_for_the_bot(self, monkeypatch) -> None:
         _, state = google_oauth.start("telegram:1")
 
-        def boom(text: str):
+        def boom(text: str, state: str = ""):
             raise google_oauth.OAuthError("Google отклонил код (invalid_grant).")
 
         monkeypatch.setattr(google_oauth, "exchange_code", boom)
@@ -295,3 +295,66 @@ class TestClientType:
         text = google_oauth.instructions()
         assert "ошибку соединения" in text
         assert "пришлите его сюда" in text
+
+
+class TestPkce:
+    """Библиотека Google сама добавляет PKCE в ссылку. Секрет живёт в объекте,
+    выдавшем ссылку, а обмен идёт в новом — без переноса секрета Google
+    отвечает invalid_grant («Missing code verifier»), и /auth не работает."""
+
+    def _intercept_token_request(self, monkeypatch):
+        import requests
+
+        sent = {}
+
+        def fake_request(session, method, url, data=None, **kwargs):
+            sent["url"] = url
+            sent["data"] = data if isinstance(data, dict) else dict(
+                pair.split("=", 1) for pair in (data or "").split("&") if "=" in pair
+            )
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps({
+                "access_token": "ya29.test", "refresh_token": "1//refresh", "expires_in": 3599,
+                "token_type": "Bearer", "scope": f"{DRIVE_READONLY} {DRIVE_FILE} {CALENDAR_EVENTS}",
+            }).encode()
+            response.headers["Content-Type"] = "application/json"
+            response.url = url
+            response.request = requests.Request(method, url).prepare()
+            return response
+
+        monkeypatch.setattr(requests.Session, "request", fake_request)
+        monkeypatch.setattr(google_oauth.token_store, "save_token", lambda payload: "token-path")
+        monkeypatch.setattr(google_oauth, "_account_email", lambda: "kirill@example.com")
+        return sent
+
+    @staticmethod
+    def _challenge(verifier: str) -> str:
+        import base64
+        import hashlib
+
+        return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+
+    def test_pasted_code_is_exchanged_with_the_links_verifier(self, client_secret, monkeypatch) -> None:
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        url, state = google_oauth.start("telegram:1107365044")
+        challenge = parse_qs(urlparse(url).query)["code_challenge"][0]
+        sent = self._intercept_token_request(monkeypatch)
+
+        # Человек прислал только код, без адреса — state знает бот.
+        result = google_oauth.exchange_code("4/0Axyz_abcdefghijkl", state=state)
+
+        verifier = unquote(sent["data"]["code_verifier"])
+        assert self._challenge(verifier) == challenge
+        assert result["account"] == "kirill@example.com" and result["missing_scopes"] == []
+
+    def test_state_is_taken_from_the_pasted_address(self, client_secret, monkeypatch) -> None:
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        url, state = google_oauth.start("telegram:1107365044")
+        challenge = parse_qs(urlparse(url).query)["code_challenge"][0]
+        sent = self._intercept_token_request(monkeypatch)
+
+        google_oauth.exchange_code(f"http://localhost:8765/?state={state}&code=4%2F0Axyz_abcdefghijkl&scope=x")
+        assert self._challenge(unquote(sent["data"]["code_verifier"])) == challenge

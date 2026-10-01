@@ -335,7 +335,7 @@ class TestAuthCommand:
         monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
         exchanged: list[str] = []
 
-        def fake_exchange(text: str) -> dict:
+        def fake_exchange(text: str, state: str = "") -> dict:
             exchanged.append(text)
             return {
                 "path": "/data/credentials/google_token.json.enc",
@@ -362,7 +362,7 @@ class TestAuthCommand:
         monkeypatch.setattr(
             bot_module.google_oauth,
             "exchange_code",
-            lambda text: {
+            lambda text, state="": {
                 "path": "p", "encrypted": False, "account": "",
                 "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
                 "missing_scopes": ["https://www.googleapis.com/auth/calendar.events"],
@@ -380,7 +380,7 @@ class TestAuthCommand:
         bot, api = self._bot(monkeypatch)
         monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
 
-        def boom(text: str):
+        def boom(text: str, state: str = ""):
             raise bot_module.google_oauth.OAuthError("Google отклонил код (invalid_grant).")
 
         monkeypatch.setattr(bot_module.google_oauth, "exchange_code", boom)
@@ -394,7 +394,7 @@ class TestAuthCommand:
         monkeypatch.setattr(
             bot_module.google_oauth,
             "exchange_code",
-            lambda text: pytest.fail("вопрос не должен уходить на обмен"),
+            lambda text, state="": pytest.fail("вопрос не должен уходить на обмен"),
         )
         bot._handle_update(message("/auth"))
         bot._handle_update(message("какие встречи на завтра?"))
