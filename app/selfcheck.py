@@ -728,6 +728,11 @@ def check_quant() -> list[Check]:
                 f"{detail}; модель {model} даёт {len(vector)} — не та модель",
                 ["Укажите в QDRANT_EMBEDDING_MODEL модель, которой наполняли базу."],
             ))
+        elif info.points == 0:
+            checks.append(Check(
+                f"Квант: {name}", WARN, f"{detail}; поиск по смыслу ({model}) готов, но коллекция пуста",
+                ["Документы в Квант ещё не загружены — искать боту нечего."],
+            ))
         else:
             checks.append(Check(f"Квант: {name}", OK, f"{detail}; поиск по смыслу ({model})"))
     return checks

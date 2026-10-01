@@ -239,3 +239,17 @@ def test_no_roles_no_filter(qdrant, monkeypatch) -> None:
     quant.search("тарифы")
     body = next(body for _, path, body in qdrant.calls if path.endswith("/points/search"))
     assert "filter" not in body
+
+
+def test_selfcheck_warns_on_empty_collection(qdrant, monkeypatch) -> None:
+    from app import selfcheck
+
+    original = qdrant.request
+    monkeypatch.setattr(
+        quant.httpx, "request",
+        lambda method, url, **kw: FakeQdrant._ok({"points_count": 0, "config": {"params": {"vectors": {"size": 4}}}})
+        if url.endswith("/collections/operon") else original(method, url, **kw),
+    )
+    monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
+    check = selfcheck.check_quant()[1]
+    assert check.status == selfcheck.WARN and "пуста" in check.detail
