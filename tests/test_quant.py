@@ -170,3 +170,33 @@ def test_env_file_is_loaded_before_reading_settings(tmp_path) -> None:
     code = "import os, app.quant as q; print('app.config' in __import__('sys').modules)"
     out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
     assert out.stdout.strip() == "True", out.stderr
+
+
+def test_slow_collection_info_falls_back_to_a_sample(qdrant, monkeypatch) -> None:
+    """Настройки коллекции не ответили (индексация) — размер вектора берём по записи."""
+    original = qdrant.request
+
+    def slow(method, url, json=None, headers=None, **kwargs):
+        if url.endswith("/collections/operon"):
+            raise httpx.ReadTimeout("timed out")
+        if url.endswith("/points/scroll") and json and json.get("with_vector"):
+            qdrant.calls.append((method, url[len(URL):], json))
+            return FakeQdrant._ok({"points": [{"id": 1, "vector": {"dense": [0.0] * 4}}]})
+        return original(method, url, json=json, headers=headers, **kwargs)
+
+    monkeypatch.setattr(quant.httpx, "request", slow)
+    monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
+    info = quant.collection_info("operon", quant.config())
+    assert (info.size, info.vector_name, info.points) == (4, "dense", -1)
+    lines = "\n".join(quant.probe("тарифы"))
+    assert "настройки не ответили" in lines and "по смыслу" in lines
+
+
+def test_cyrillic_collection_name_is_encoded(qdrant, monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(
+        quant.httpx, "request",
+        lambda method, url, **kw: seen.append(url) or FakeQdrant._ok({"points_count": 0, "config": {}}),
+    )
+    quant.collection_info("квантум", quant.config())
+    assert seen[0] == URL + "/collections/%D0%BA%D0%B2%D0%B0%D0%BD%D1%82%D1%83%D0%BC"

@@ -33,8 +33,10 @@ import re
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -43,6 +45,9 @@ from .config import ROUTERAI_BASE_URL, settings
 from .net import explain, http_options
 
 TIMEOUT = httpx.Timeout(25.0, connect=15.0)
+# Сведения о коллекции Qdrant отдаёт не сразу, пока идёт индексация. Ждать
+# их долго незачем: размер вектора видно и по одной записи.
+INFO_TIMEOUT = httpx.Timeout(12.0, connect=10.0)
 INFO_TTL_SECONDS = 600
 
 TEXT_KEYS = ("page_content", "content", "text", "chunk", "chunk_text", "document", "body", "pageContent")
@@ -112,11 +117,18 @@ def config() -> Config:
 # --- HTTP --------------------------------------------------------------------
 
 
-def _request(method: str, path: str, conf: Config, body: dict | None = None) -> Any:
+def _c(name: str) -> str:
+    """Имя коллекции в адресе: кириллица и пробелы — в %-кодировке."""
+    return "/collections/" + quote(name, safe="")
+
+
+def _request(
+    method: str, path: str, conf: Config, body: dict | None = None, timeout: httpx.Timeout = TIMEOUT
+) -> Any:
     headers = {"api-key": conf.api_key} if conf.api_key else {}
     try:
         response = httpx.request(
-            method, conf.url + path, json=body, headers=headers, timeout=TIMEOUT, **http_options()
+            method, conf.url + path, json=body, headers=headers, timeout=timeout, **http_options()
         )
     except httpx.HTTPError as exc:
         raise QuantError(f"Квант не отвечает ({conf.url}): {explain(exc)}") from exc
@@ -168,24 +180,44 @@ def collection_info(name: str, conf: Config) -> CollectionInfo:
         cached = _info_cache.get(name)
         if cached and time.monotonic() - cached[0] < INFO_TTL_SECONDS:
             return cached[1]
-    result = _request("GET", f"/collections/{name}", conf) or {}
-    vectors = ((result.get("config") or {}).get("params") or {}).get("vectors") or {}
-    vector_name, size = "", 0
-    if isinstance(vectors, dict) and "size" in vectors:
-        size = int(vectors.get("size") or 0)
-    elif isinstance(vectors, dict) and vectors:
-        names = list(vectors)
-        vector_name = conf.vector_name if conf.vector_name in vectors else names[0]
-        size = int((vectors.get(vector_name) or {}).get("size") or 0)
-    info = CollectionInfo(
-        name=name,
-        points=int(result.get("points_count") or result.get("vectors_count") or 0),
-        vector_name=vector_name,
-        size=size,
-    )
+    try:
+        result = _request("GET", _c(name), conf, timeout=INFO_TIMEOUT) or {}
+        vectors = ((result.get("config") or {}).get("params") or {}).get("vectors") or {}
+        vector_name, size = "", 0
+        if isinstance(vectors, dict) and "size" in vectors:
+            size = int(vectors.get("size") or 0)
+        elif isinstance(vectors, dict) and vectors:
+            names = list(vectors)
+            vector_name = conf.vector_name if conf.vector_name in vectors else names[0]
+            size = int((vectors.get(vector_name) or {}).get("size") or 0)
+        info = CollectionInfo(
+            name=name,
+            points=int(result.get("points_count") or result.get("vectors_count") or 0),
+            vector_name=vector_name,
+            size=size,
+        )
+    except QuantError:
+        info = _info_from_sample(name, conf)
     with _lock:
         _info_cache[name] = (time.monotonic(), info)
     return info
+
+
+def _info_from_sample(name: str, conf: Config) -> CollectionInfo:
+    """Размер и имя вектора — по одной записи, когда сведения о коллекции не пришли."""
+    sample = _request(
+        "POST", _c(name) + "/points/scroll", conf, {"limit": 1, "with_payload": False, "with_vector": True}
+    )
+    points = (sample or {}).get("points", []) if isinstance(sample, dict) else []
+    vector = points[0].get("vector") if points else None
+    vector_name, size = "", 0
+    if isinstance(vector, list):
+        size = len(vector)
+    elif isinstance(vector, dict) and vector:
+        vector_name = conf.vector_name if conf.vector_name in vector else next(iter(vector))
+        value = vector.get(vector_name)
+        size = len(value) if isinstance(value, list) else 0
+    return CollectionInfo(name=name, points=-1, vector_name=vector_name, size=size)
 
 
 def reset_cache() -> None:
@@ -286,7 +318,7 @@ def _vector_search(query_vector: list[float], info: CollectionInfo, conf: Config
     vector: Any = {"name": info.vector_name, "vector": query_vector} if info.vector_name else query_vector
     result = _request(
         "POST",
-        f"/collections/{info.name}/points/search",
+        _c(info.name) + "/points/search",
         conf,
         {"vector": vector, "limit": limit, "with_payload": True},
     )
@@ -320,7 +352,7 @@ def _text_search(query: str, info: CollectionInfo, conf: Config, limit: int) -> 
     should = [{"key": field, "match": {"text": word}} for field in fields for word in words]
     result = _request(
         "POST",
-        f"/collections/{info.name}/points/scroll",
+        _c(info.name) + "/points/scroll",
         conf,
         {"filter": {"should": should}, "limit": 200, "with_payload": True, "with_vector": False},
     )
@@ -382,48 +414,66 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
 # --- проверка ----------------------------------------------------------------
 
 
-def probe(query: str = "тарифы") -> list[str]:
-    """Что видно в Кванте — для самопроверки и `python -m app.quant`."""
+def probe(query: str = "тарифы") -> Iterator[str]:
+    """Что видно в Кванте — для самопроверки и `python -m app.quant`.
+
+    Строки отдаются по мере готовности, с временем шага: если сервер
+    задумается, будет видно, на чём именно.
+    """
     conf = config()
     if not conf.enabled:
-        return ["QDRANT_URL не задан — Квант не подключён."]
-    lines = [f"Адрес: {conf.url}", f"Ключ: {'задан' if conf.api_key else 'НЕ задан'}"]
+        yield "QDRANT_URL не задан — Квант не подключён."
+        return
+    yield f"Адрес: {conf.url}"
+    yield f"Ключ: {'задан' if conf.api_key else 'НЕ задан'}"
     reset_cache()
+
+    started = time.monotonic()
+
+    def took() -> str:
+        nonlocal started
+        now = time.monotonic()
+        text = f" ({now - started:.1f} с)"
+        started = now
+        return text
+
     names = collection_names(conf)
-    lines.append(f"Коллекции: {', '.join(names) or 'нет'}")
+    yield f"Коллекции: {', '.join(names) or 'нет'}{took()}"
     for name in names:
+        yield f"[{name}] читаю настройки коллекции…"
         info = collection_info(name, conf)
         vector = f"вектор «{info.vector_name}»" if info.vector_name else "вектор без имени"
-        lines.append(f"[{name}] записей: {info.points}, {vector}, размер {info.size or '?'}")
+        points = "?" if info.points < 0 else info.points
+        note = " — настройки не ответили, размер взят по записи" if info.points < 0 else ""
+        yield f"[{name}] записей: {points}, {vector}, размер {info.size or '?'}{note}{took()}"
         model = _embedding_model(conf, info)
-        lines.append(
+        yield (
             f"[{name}] модель эмбеддингов: {model or 'НЕ определена — будет поиск по словам'}"
             + ("" if conf.embedding_model or not model else " (угадана по размеру — задайте QDRANT_EMBEDDING_MODEL)")
         )
         sample = _request(
-            "POST", f"/collections/{name}/points/scroll", conf,
+            "POST", _c(name) + "/points/scroll", conf,
             {"limit": 1, "with_payload": True, "with_vector": False},
         )
-        points = (sample or {}).get("points", []) if isinstance(sample, dict) else []
-        if points:
-            payload = points[0].get("payload") or {}
-            keys = sorted(payload)
+        points_list = (sample or {}).get("points", []) if isinstance(sample, dict) else []
+        if points_list:
+            payload = points_list[0].get("payload") or {}
             meta = payload.get("metadata")
-            lines.append(f"[{name}] поля записи: {', '.join(keys)}")
+            yield f"[{name}] поля записи: {', '.join(sorted(payload))}{took()}"
             if isinstance(meta, dict):
-                lines.append(f"[{name}] поля metadata: {', '.join(sorted(meta))}")
-            view = describe_point(points[0], name, conf)
-            lines.append(
+                yield f"[{name}] поля metadata: {', '.join(sorted(meta))}"
+            view = describe_point(points_list[0], name, conf)
+            yield (
                 f"[{name}] пример: «{view['title']}», дата {view['date'] or '—'}, "
                 f"ссылка {'есть' if view['link'] else 'нет'}, текст {len(view['text'])} симв."
             )
+    yield f"Пробный поиск «{query}»…"
     result = search(query, limit=3)
-    lines.append(f"Пробный поиск «{query}»: {result.get('status')}, {result.get('search_mode', '')}")
+    yield f"Пробный поиск: {result.get('status')}, {result.get('search_mode', '')}{took()}"
     for warning in result.get("warnings", []):
-        lines.append(f"  ! {warning}")
+        yield f"  ! {warning}"
     for item in result.get("results", []):
-        lines.append(f"  — {item['title']} (score {item.get('score')})")
-    return lines
+        yield f"  — {item['title']} (score {item.get('score')})"
 
 
 def main() -> int:
@@ -433,7 +483,7 @@ def main() -> int:
     query = " ".join(sys.argv[1:]) or "тарифы"
     try:
         for line in probe(query):
-            print(line)
+            print(line, flush=True)
     except QuantError as exc:
         print(f"ОШИБКА: {exc}")
         return 1
