@@ -29,6 +29,7 @@ class FakeQdrant:
     def __init__(self, vectors=None, embed_size=4):
         self.vectors = vectors if vectors is not None else {"size": 4, "distance": "Cosine"}
         self.embed_size = embed_size
+        self.flat = True  # по умолчанию все тексты дают один вектор
         self.calls: list[tuple[str, str, dict | None]] = []
 
     def request(self, method, url, json=None, headers=None, **kwargs):
@@ -47,7 +48,17 @@ class FakeQdrant:
 
     def post(self, url, json=None, headers=None, **kwargs):
         self.calls.append(("POST", url, json))
-        return httpx.Response(200, json={"data": [{"embedding": [0.1] * self.embed_size}]})
+        texts = json["input"] if isinstance(json["input"], list) else [json["input"]]
+        # «Модель»: вектор зависит от того, есть ли в тексте слово «тариф» — хватает,
+        # чтобы проверить, что индекс бота ранжирует по смыслу.
+        data = [
+            {"index": i, "embedding": ([1.0] + [0.0] * (self.embed_size - 1)) if "ариф" in t
+             else ([0.0, 1.0] + [0.0] * (self.embed_size - 2)) if self.embed_size > 1 else [0.1]}
+            for i, t in enumerate(texts)
+        ]
+        if self.flat:
+            data = [{"index": i, "embedding": [0.1] * self.embed_size} for i, _ in enumerate(texts)]
+        return httpx.Response(200, json={"data": data})
 
     @staticmethod
     def _ok(result):
@@ -55,12 +66,15 @@ class FakeQdrant:
 
 
 @pytest.fixture
-def qdrant(monkeypatch):
+def qdrant(monkeypatch, tmp_path):
     for name in ("QDRANT_COLLECTION", "QDRANT_VECTOR_NAME", "QDRANT_EMBEDDING_MODEL", "QDRANT_TEXT_FIELD",
                  "QDRANT_API_KEY", "QDRANT_ROLES"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("QDRANT_URL", URL + "/")
     monkeypatch.setenv("QDRANTSERVICEAPI_KEY", "secret")  # имя ключа из панели Amvera
+    from dataclasses import replace
+
+    monkeypatch.setattr(quant, "settings", replace(quant.settings, data_dir=tmp_path))
     fake = FakeQdrant()
     monkeypatch.setattr(quant.httpx, "request", fake.request)
     monkeypatch.setattr(quant.httpx, "post", fake.post)
@@ -97,13 +111,15 @@ def test_named_vector_is_used(qdrant, monkeypatch) -> None:
     assert body["vector"] == {"name": "dense", "vector": [0.1] * 4}
 
 
-def test_wrong_model_size_falls_back_to_words_and_says_why(qdrant, monkeypatch) -> None:
+def test_wrong_model_size_uses_bots_own_index(qdrant, monkeypatch) -> None:
+    """Наша модель другого размера, чем векторы базы, — ищем по своему индексу текста."""
     monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
     qdrant.embed_size = 3
-    result = quant.search("договор Ромашка")
-    assert "по словам" in result["search_mode"]
-    assert any("даёт вектор 3" in w for w in result["warnings"])
-    assert result["results"][0]["text"].startswith("Договор с Ромашкой")
+    qdrant.flat = False
+    result = quant.search("тарифы для партнёров")
+    assert "индекс бота" in result["search_mode"]
+    assert result["results"][0]["title"] == "Тарифы 2026"
+    assert not any(path.endswith("/points/search") for _, path, _ in qdrant.calls)
 
 
 def test_word_search_without_model(qdrant) -> None:
@@ -277,13 +293,35 @@ class TestModelMatch:
         result = quant.search("тарифы")
         assert "по смыслу" in result["search_mode"] and "warnings" not in result
 
-    def test_other_model_falls_back_to_words_and_says_so(self, qdrant, monkeypatch) -> None:
-        self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])  # ортогонален нашему
+    def test_other_model_uses_bots_own_index(self, qdrant, monkeypatch, tmp_path) -> None:
+        self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])  # чужая модель
+        qdrant.flat = False
         result = quant.search("тариф Бизнес")
-        assert "по словам" in result["search_mode"]
-        assert any("другой моделью" in w for w in result["warnings"])
-        assert result["results"][0]["title"] == "Тарифы 2026"
+        assert "индекс бота" in result["search_mode"]
+        top = result["results"][0]
+        assert top["title"] == "Тарифы 2026" and top["link"].startswith("https://drive.google.com")
         assert not any(path.endswith("/points/search") for _, path, _ in qdrant.calls)
+        assert (tmp_path / "quant_index.json").exists()
+
+        # Второй поиск фрагменты заново не пересчитывает — только сам запрос.
+        embeds_before = sum(1 for _, path, _ in qdrant.calls if path.endswith("/embeddings"))
+        quant.search("договор")
+        embeds_after = sum(1 for _, path, _ in qdrant.calls if path.endswith("/embeddings"))
+        assert embeds_after - embeds_before == 1
+
+    def test_index_follows_changes_in_quant(self, qdrant, monkeypatch) -> None:
+        self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])
+        qdrant.flat = False
+        conf = quant.config()
+        info = quant.collection_info("operon", conf)
+        assert len(quant.sync_mirror(info, conf, "some/embedder", force=True)) == 2
+        POINTS.append({"id": 3, "payload": {"text": "Новый регламент", "metadata": {"name": "Регламент"}}})
+        try:
+            index = quant.sync_mirror(info, conf, "some/embedder", force=True)
+            assert len(index) == 3 and index["3"]["view"]["title"] == "Регламент"
+        finally:
+            POINTS.pop()
+        assert len(quant.sync_mirror(info, conf, "some/embedder", force=True)) == 2
 
     def test_probe_names_the_matching_model(self, qdrant, monkeypatch) -> None:
         self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])
@@ -292,9 +330,10 @@ class TestModelMatch:
         assert "документов: 2" in lines and "Тарифы 2026 (1)" in lines
 
 
-def test_selfcheck_fails_on_foreign_model(qdrant, monkeypatch) -> None:
+def test_selfcheck_warns_on_foreign_model(qdrant, monkeypatch) -> None:
     from app import selfcheck
 
     TestModelMatch()._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])
     check = selfcheck.check_quant()[1]
-    assert check.status == selfcheck.FAIL and "ДРУГОЙ моделью" in check.detail
+    assert check.status == selfcheck.WARN and "ДРУГОЙ моделью" in check.detail
+    assert "своему индексу" in check.detail

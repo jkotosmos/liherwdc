@@ -731,11 +731,11 @@ def check_quant() -> list[Check]:
         elif info.points != 0 and (match := _quant_match(quant, info, conf, model)) is not None \
                 and match < quant.SAME_MODEL_COSINE:
             checks.append(Check(
-                f"Квант: {name}", FAIL,
+                f"Квант: {name}", WARN,
                 f"{detail}; база наполнена ДРУГОЙ моделью, не {model} (совпадение {match} из 1.0) — "
-                "поиск по смыслу был бы случайным, бот ищет по словам",
-                ["Узнайте у загрузчика модель эмбеддингов и задайте QDRANT_EMBEDDING_MODEL. "
-                 "Проверить кандидатов: python -m app.quant --models модель1,модель2"],
+                f"бот ищет по смыслу по своему индексу текста ({model}), в Квант не пишет",
+                ["Чтобы искать прямо по векторам Кванта, узнайте у загрузчика модель и задайте "
+                 "QDRANT_EMBEDDING_MODEL. Проверить: python -m app.quant --models модель1,модель2"],
             ))
         elif info.points == 0:
             checks.append(Check(

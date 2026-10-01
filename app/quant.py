@@ -232,6 +232,7 @@ def reset_cache() -> None:
         _info_cache.clear()
         _names_cache = None
         _model_checks.clear()
+        _mirror_checked.clear()
 
 
 # --- разбор записи -----------------------------------------------------------
@@ -298,11 +299,15 @@ def describe_point(point: dict[str, Any], collection: str, conf: Config) -> dict
 
 
 def embed(query: str, conf: Config, model: str) -> list[float]:
+    return embed_many([query], conf, model)[0]
+
+
+def embed_many(texts: list[str], conf: Config, model: str) -> list[list[float]]:
     headers = {"Authorization": f"Bearer {conf.embedding_key}"} if conf.embedding_key else {}
     try:
         response = httpx.post(
             conf.embedding_url + "/embeddings",
-            json={"model": model, "input": query},
+            json={"model": model, "input": texts if len(texts) > 1 else texts[0]},
             headers=headers,
             timeout=TIMEOUT,
             **http_options(),
@@ -312,9 +317,13 @@ def embed(query: str, conf: Config, model: str) -> list[float]:
     if response.status_code >= 400:
         raise QuantError(f"Модель эмбеддингов {model}: ответ {response.status_code} {response.text[:200]}")
     try:
-        return [float(x) for x in response.json()["data"][0]["embedding"]]
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        items = sorted(response.json()["data"], key=lambda item: item.get("index", 0))
+        vectors = [[float(x) for x in item["embedding"]] for item in items]
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise QuantError(f"Модель эмбеддингов {model} вернула неожиданный ответ.") from exc
+    if len(vectors) != len(texts):
+        raise QuantError(f"Модель эмбеддингов {model} вернула {len(vectors)} векторов вместо {len(texts)}.")
+    return vectors
 
 
 def _embedding_model(conf: Config, info: CollectionInfo) -> str:
@@ -403,6 +412,116 @@ def _text_search(query: str, info: CollectionInfo, conf: Config, limit: int) -> 
     return [{**p, "score": round(hits / len(words), 3)} for hits, p in scored[:limit]]
 
 
+# --- собственный индекс бота ------------------------------------------------
+#
+# Если база наполнена моделью, которой у нас нет, искать по её векторам
+# бессмысленно. Тогда бот читает из Кванта только текст (в базу ничего не
+# пишет), строит векторы своей моделью и хранит их у себя. Новые и
+# изменённые фрагменты досчитываются при поиске — по хэшу текста.
+
+MIRROR_CAP = 3000
+MIRROR_BATCH = 64
+MIRROR_REFRESH_SECONDS = 300
+_mirror_lock = threading.Lock()
+_mirror_checked: dict[str, float] = {}
+
+
+def _mirror_path():
+    return settings.data_dir / "quant_index.json"
+
+
+def _text_hash(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_mirror(model: str) -> dict[str, Any]:
+    try:
+        data = json.loads(_mirror_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or data.get("model") != model:
+        data = {"model": model, "collections": {}}
+    data.setdefault("collections", {})
+    return data
+
+
+def _save_mirror(data: dict[str, Any]) -> None:
+    path = _mirror_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def sync_mirror(info: CollectionInfo, conf: Config, model: str, *, force: bool = False) -> dict[str, Any]:
+    """Досчитывает векторы новых и изменённых фрагментов. Возвращает индекс коллекции."""
+    with _mirror_lock:
+        data = _load_mirror(model)
+        index: dict[str, Any] = data["collections"].setdefault(info.name, {})
+        fresh = time.monotonic() - _mirror_checked.get(info.name, -1e9) < MIRROR_REFRESH_SECONDS
+        if fresh and index and not force:
+            return index
+
+        current: dict[str, dict[str, Any]] = {}
+        for point in _scroll(info.name, conf, cap=MIRROR_CAP):
+            view = describe_point(point, info.name, conf)
+            if not view["text"]:
+                continue
+            view.pop("score", None)
+            view.pop("payload", None)
+            view["roles"] = _roles_of(point)
+            current[str(point.get("id"))] = view
+
+        todo = [pid for pid, view in current.items()
+                if (index.get(pid) or {}).get("h") != _text_hash(view["text"])]
+        for start in range(0, len(todo), MIRROR_BATCH):
+            batch = todo[start:start + MIRROR_BATCH]
+            vectors = embed_many([current[pid]["text"] for pid in batch], conf, model)
+            for pid, vector in zip(batch, vectors):
+                index[pid] = {"h": _text_hash(current[pid]["text"]), "v": [round(x, 5) for x in vector]}
+        for pid in list(index):
+            if pid not in current:
+                index.pop(pid)
+            else:
+                index[pid]["view"] = current[pid]
+        if todo or len(index) != len(current) or force:
+            _save_mirror(data)
+        elif not _mirror_path().exists():
+            _save_mirror(data)
+        _mirror_checked[info.name] = time.monotonic()
+        return index
+
+
+def _roles_of(point: dict[str, Any]) -> list[str]:
+    for layer in _layers(point.get("payload") or {}):
+        value = layer.get("accessibleByRoles")
+        if value:
+            return [str(r) for r in (value if isinstance(value, list) else [value])]
+    return []
+
+
+def _mirror_search(
+    query_vector: list[float], info: CollectionInfo, conf: Config, model: str, limit: int
+) -> list[dict]:
+    index = sync_mirror(info, conf, model)
+    allowed = set(conf.roles)
+    scored = []
+    for pid, entry in index.items():
+        view = entry.get("view") or {}
+        if allowed and not allowed & set(view.get("roles") or []):
+            continue
+        scored.append((_cosine(query_vector, entry["v"]), view))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    results = []
+    for score, view in scored[:limit]:
+        item = {k: v for k, v in view.items() if k != "roles"}
+        item["score"] = round(score, 3)
+        results.append(item)
+    return results
+
+
 # --- та ли модель эмбеддингов ------------------------------------------------
 
 # Вектор того же текста той же моделью совпадает почти полностью (≈1.0).
@@ -429,6 +548,28 @@ def _stored_sample(info: CollectionInfo, conf: Config) -> tuple[str, list[float]
         if isinstance(vector, list) and vector and text:
             return text, vector
     return None
+
+
+def _stored_spread(info: CollectionInfo, conf: Config) -> float | None:
+    """Среднее сходство векторов базы между собой.
+
+    Настоящие эмбеддинги одной модели похожи друг на друга (обычно 0.2–0.6),
+    случайные или испорченные — около нуля.
+    """
+    result = _request(
+        "POST", _c(info.name) + "/points/scroll", conf, {"limit": 8, "with_payload": False, "with_vector": True}
+    )
+    vectors = []
+    for point in (result or {}).get("points", []) if isinstance(result, dict) else []:
+        vector = point.get("vector")
+        if isinstance(vector, dict):
+            vector = vector.get(info.vector_name) if info.vector_name else next(iter(vector.values()), None)
+        if isinstance(vector, list) and vector:
+            vectors.append(vector)
+    pairs = [(a, b) for i, a in enumerate(vectors) for b in vectors[i + 1:]]
+    if not pairs:
+        return None
+    return round(sum(_cosine(a, b) for a, b in pairs) / len(pairs), 3)
 
 
 def model_match(info: CollectionInfo, conf: Config, model: str) -> float | None:
@@ -466,18 +607,16 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
         if model and info.size:
             try:
                 vector = embed(query, conf, model)
-                if len(vector) != info.size:
-                    raise QuantError(
-                        f"модель {model} даёт вектор {len(vector)}, а в коллекции «{name}» — {info.size}. "
-                        "Укажите в QDRANT_EMBEDDING_MODEL ту модель, которой наполняли базу."
-                    )
-                match = model_match(info, conf, model)
-                if match is not None and match < SAME_MODEL_COSINE:
-                    raise QuantError(
-                        f"база «{name}» наполнена другой моделью эмбеддингов, не {model} "
-                        f"(совпадение {match}). Укажите в QDRANT_EMBEDDING_MODEL ту, что использовал "
-                        "загрузчик; пока ищу по словам."
-                    )
+                foreign = len(vector) != info.size
+                if not foreign:
+                    match = model_match(info, conf, model)
+                    foreign = match is not None and match < SAME_MODEL_COSINE
+                if foreign:
+                    # Векторы базы построены не нашей моделью — ищем по своему
+                    # индексу того же текста (в Квант ничего не пишем).
+                    found.extend(_mirror_search(vector, info, conf, model, limit))
+                    modes.append(f"{name}: по смыслу (индекс бота, {model})")
+                    continue
                 points = _vector_search(vector, info, conf, limit)
                 modes.append(f"{name}: по смыслу ({model})")
             except QuantError as exc:
@@ -600,6 +739,27 @@ def probe(query: str = "тарифы", extra_models: tuple[str, ...] = ()) -> It
                     yield f"[{name}] модель {candidate}: ✔ ТА ЖЕ, что у базы (совпадение {match})"
                 else:
                     yield f"[{name}] модель {candidate}: ✘ другая (совпадение {match}, у той же было бы ≈1.0)"
+        if points_list:
+            spread = _stored_spread(info, conf)
+            if spread is not None:
+                verdict = (
+                    "похожи на настоящие эмбеддинги — база наполнена другой моделью"
+                    if spread > 0.15 else "почти случайны — возможно, векторы записаны с ошибкой"
+                )
+                yield f"[{name}] сходство векторов базы между собой: {spread} ({verdict})"
+            model = _embedding_model(conf, info)
+            if model:
+                try:
+                    match = model_match(info, conf, model)
+                    if match is not None and match < SAME_MODEL_COSINE:
+                        started_sync = time.monotonic()
+                        index = sync_mirror(info, conf, model, force=True)
+                        yield (
+                            f"[{name}] индекс бота ({model}): {len(index)} фрагментов, "
+                            f"{time.monotonic() - started_sync:.1f} с — поиск по смыслу работает по нему"
+                        )
+                except QuantError as exc:
+                    yield f"[{name}] индекс бота не построен: {exc}"
     yield f"Пробный поиск «{query}»…"
     result = search(query, limit=3)
     yield f"Пробный поиск: {result.get('status')}, {result.get('search_mode', '')}{took()}"
