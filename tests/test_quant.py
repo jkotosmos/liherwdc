@@ -200,3 +200,19 @@ def test_cyrillic_collection_name_is_encoded(qdrant, monkeypatch) -> None:
     )
     quant.collection_info("квантум", quant.config())
     assert seen[0] == URL + "/collections/%D0%BA%D0%B2%D0%B0%D0%BD%D1%82%D1%83%D0%BC"
+
+
+def test_probe_says_when_collection_is_empty(qdrant, monkeypatch) -> None:
+    def empty(method, url, json=None, headers=None, **kwargs):
+        path = url[len(URL):]
+        if path == "/collections":
+            return FakeQdrant._ok({"collections": [{"name": "knowledge_base"}]})
+        if path.endswith("/points/count"):
+            return FakeQdrant._ok({"count": 0})
+        if path.endswith("/points/scroll"):
+            return FakeQdrant._ok({"points": [], "next_page_offset": None})
+        return FakeQdrant._ok({"points_count": 0, "config": {"params": {"vectors": {"size": 4}}}})
+
+    monkeypatch.setattr(quant.httpx, "request", empty)
+    lines = "\n".join(quant.probe("тарифы"))
+    assert "точный подсчёт записей: 0" in lines and "коллекция ПУСТА" in lines

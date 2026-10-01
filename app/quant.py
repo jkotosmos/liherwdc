@@ -467,6 +467,17 @@ def probe(query: str = "тарифы") -> Iterator[str]:
                 f"[{name}] пример: «{view['title']}», дата {view['date'] or '—'}, "
                 f"ссылка {'есть' if view['link'] else 'нет'}, текст {len(view['text'])} симв."
             )
+        else:
+            # Пустая выборка: либо записей нет, либо ответ не того вида — покажем как есть.
+            yield f"[{name}] выборка одной записи пуста; ответ сервера: {json.dumps(sample, ensure_ascii=False)[:300]}"
+            try:
+                counted = _request("POST", _c(name) + "/points/count", conf, {"exact": True})
+                total = (counted or {}).get("count") if isinstance(counted, dict) else counted
+                yield f"[{name}] точный подсчёт записей: {total}{took()}"
+                if total == 0:
+                    yield f"[{name}] коллекция ПУСТА — документы в Квант ещё не загружены, искать нечего."
+            except QuantError as exc:
+                yield f"[{name}] подсчёт записей не удался: {exc}"
     yield f"Пробный поиск «{query}»…"
     result = search(query, limit=3)
     yield f"Пробный поиск: {result.get('status')}, {result.get('search_mode', '')}{took()}"
