@@ -38,6 +38,8 @@ from typing import Any
 
 import httpx
 
+# Импорт config загружает .env — до первого чтения QDRANT_* из окружения.
+from .config import ROUTERAI_BASE_URL, settings
 from .net import explain, http_options
 
 TIMEOUT = httpx.Timeout(25.0, connect=15.0)
@@ -92,8 +94,6 @@ def config() -> Config:
     if url and not url.startswith(("http://", "https://")):
         url = "https://" + url
     collections = tuple(c.strip() for c in env("QDRANT_COLLECTION").split(",") if c.strip())
-    from .config import ROUTERAI_BASE_URL, settings
-
     # Эмбеддинги по умолчанию — через тот же шлюз и ключ, что и модель.
     gateway = settings.base_url if settings.provider in {"routerai", "openrouter"} else ROUTERAI_BASE_URL
     return Config(

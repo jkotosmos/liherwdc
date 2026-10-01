@@ -156,3 +156,17 @@ def test_selfcheck_group(qdrant, monkeypatch) -> None:
     assert checks[1].status == selfcheck.WARN  # модели нет — только по словам, и это сказано
     monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
     assert selfcheck.check_quant()[1].status == selfcheck.OK
+
+
+def test_env_file_is_loaded_before_reading_settings(tmp_path) -> None:
+    """`python -m app.quant` без бота: QDRANT_URL из .env должен быть виден."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("QDRANT")}
+    code = "import os, app.quant as q; print('app.config' in __import__('sys').modules)"
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True)
+    assert out.stdout.strip() == "True", out.stderr
