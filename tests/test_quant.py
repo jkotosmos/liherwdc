@@ -110,9 +110,9 @@ def test_word_search_without_model(qdrant) -> None:
     result = quant.search("договор с Ромашкой")
     assert result["status"] == "ok" and "по словам" in result["search_mode"]
     assert not any(path.endswith("/embeddings") for _, path, _ in qdrant.calls)
-    scroll = next(body for _, path, body in qdrant.calls if path.endswith("/points/scroll"))
-    words = {c["match"]["text"] for c in scroll["filter"]["should"]}
-    assert {"догово", "ромашк"} <= words  # основы слов, а не окончания
+    # Ищем сами по основам слов: «договор» и «Ромашкой» находят «Договор с Ромашкой».
+    assert result["results"][0]["text"].startswith("Договор с Ромашкой")
+    assert quant.keywords("договор с Ромашкой") == ["догово", "ромашк"]
 
 
 def test_guessed_model_by_vector_size(qdrant) -> None:
@@ -226,11 +226,11 @@ def test_roles_filter_limits_results(qdrant, monkeypatch) -> None:
     body = next(body for _, path, body in qdrant.calls if path.endswith("/points/search"))
     assert body["filter"] == {"must": [{"key": "metadata.accessibleByRoles", "match": {"any": ["owner", "manager"]}}]}
 
+    # Поиск по словам фильтрует сам: у тестовых записей ролей нет — не видно ничего.
     monkeypatch.delenv("QDRANT_EMBEDDING_MODEL")
-    qdrant.calls.clear()
-    quant.search("тарифы")
-    scroll = next(body for _, path, body in qdrant.calls if path.endswith("/points/scroll"))
-    assert scroll["filter"]["must"][0]["match"] == {"any": ["owner", "manager"]}
+    assert quant.search("тарифы")["results"] == []
+    monkeypatch.setenv("QDRANT_ROLES", "")
+    assert quant.search("тарифы")["results"]
 
 
 def test_no_roles_no_filter(qdrant, monkeypatch) -> None:
@@ -253,3 +253,48 @@ def test_selfcheck_warns_on_empty_collection(qdrant, monkeypatch) -> None:
     monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
     check = selfcheck.check_quant()[1]
     assert check.status == selfcheck.WARN and "пуста" in check.detail
+
+
+
+class TestModelMatch:
+    """База наполнена другой моделью того же размера — поиск по смыслу случаен.
+
+    Так было в реальном Кванте: оценки ≈0 и ниже нуля."""
+
+    def _stored(self, qdrant, monkeypatch, stored_vector):
+        original = qdrant.request
+
+        def with_vectors(method, url, json=None, headers=None, **kwargs):
+            if url.endswith("/points/scroll") and json and json.get("with_vector"):
+                return FakeQdrant._ok({"points": [{**POINTS[0], "vector": stored_vector}], "next_page_offset": None})
+            return original(method, url, json=json, headers=headers, **kwargs)
+
+        monkeypatch.setattr(quant.httpx, "request", with_vectors)
+        monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
+
+    def test_same_model_searches_by_meaning(self, qdrant, monkeypatch) -> None:
+        self._stored(qdrant, monkeypatch, [0.1] * 4)  # наш вектор того же текста — тот же
+        result = quant.search("тарифы")
+        assert "по смыслу" in result["search_mode"] and "warnings" not in result
+
+    def test_other_model_falls_back_to_words_and_says_so(self, qdrant, monkeypatch) -> None:
+        self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])  # ортогонален нашему
+        result = quant.search("тариф Бизнес")
+        assert "по словам" in result["search_mode"]
+        assert any("другой моделью" in w for w in result["warnings"])
+        assert result["results"][0]["title"] == "Тарифы 2026"
+        assert not any(path.endswith("/points/search") for _, path, _ in qdrant.calls)
+
+    def test_probe_names_the_matching_model(self, qdrant, monkeypatch) -> None:
+        self._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])
+        lines = "\n".join(quant.probe("тарифы", ("other/model",)))
+        assert "some/embedder: ✘ другая" in lines
+        assert "документов: 2" in lines and "Тарифы 2026 (1)" in lines
+
+
+def test_selfcheck_fails_on_foreign_model(qdrant, monkeypatch) -> None:
+    from app import selfcheck
+
+    TestModelMatch()._stored(qdrant, monkeypatch, [1.0, -1.0, 1.0, -1.0])
+    check = selfcheck.check_quant()[1]
+    assert check.status == selfcheck.FAIL and "ДРУГОЙ моделью" in check.detail

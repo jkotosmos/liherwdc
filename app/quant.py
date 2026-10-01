@@ -231,6 +231,7 @@ def reset_cache() -> None:
     with _lock:
         _info_cache.clear()
         _names_cache = None
+        _model_checks.clear()
 
 
 # --- разбор записи -----------------------------------------------------------
@@ -358,32 +359,93 @@ def keywords(query: str) -> list[str]:
     return words[:8]
 
 
+def _scroll(name: str, conf: Config, *, with_vector: bool = False, cap: int = 2000) -> list[dict]:
+    """Все записи коллекции (до cap) — постранично."""
+    points: list[dict] = []
+    offset: Any = None
+    while len(points) < cap:
+        body: dict[str, Any] = {"limit": min(256, cap - len(points)), "with_payload": True, "with_vector": with_vector}
+        if offset is not None:
+            body["offset"] = offset
+        result = _request("POST", _c(name) + "/points/scroll", conf, body)
+        if not isinstance(result, dict):
+            break
+        points.extend(result.get("points") or [])
+        offset = result.get("next_page_offset")
+        if offset is None:
+            break
+    return points
+
+
 def _text_search(query: str, info: CollectionInfo, conf: Config, limit: int) -> list[dict]:
+    """Поиск по словам без полнотекстового индекса: перебираем записи и считаем совпадения.
+
+    Фильтр Qdrant «match text» без индекса на поле ведёт себя по-разному в
+    разных версиях, а база OPERON невелика — надёжнее посчитать самим.
+    """
     words = keywords(query)
     if not words:
         return []
-    fields = [conf.text_field] if conf.text_field else ["page_content", "content", "text", "metadata.text"]
-    should = [{"key": field, "match": {"text": word}} for field in fields for word in words]
-    result = _request(
-        "POST",
-        _c(info.name) + "/points/scroll",
-        conf,
-        {
-            "filter": {"should": should, **({"must": _access_filter(conf)} if conf.roles else {})},
-            "limit": 200,
-            "with_payload": True,
-            "with_vector": False,
-        },
-    )
-    points = (result or {}).get("points", []) if isinstance(result, dict) else []
+    allowed = set(conf.roles)
     scored = []
-    for point in points:
-        text = json.dumps(point.get("payload") or {}, ensure_ascii=False).lower()
+    for point in _scroll(info.name, conf):
+        payload = point.get("payload") or {}
+        if allowed:
+            roles = (payload.get("metadata") or {}).get("accessibleByRoles") or payload.get("accessibleByRoles") or []
+            roles = roles if isinstance(roles, list) else [roles]
+            if not allowed & {str(r) for r in roles}:
+                continue
+        text = json.dumps(payload, ensure_ascii=False).lower()
         hits = sum(1 for word in words if word in text)
         if hits:
             scored.append((hits, point))
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [{**p, "score": hits / len(words)} for hits, p in scored[:limit]]
+    return [{**p, "score": round(hits / len(words), 3)} for hits, p in scored[:limit]]
+
+
+# --- та ли модель эмбеддингов ------------------------------------------------
+
+# Вектор того же текста той же моделью совпадает почти полностью (≈1.0).
+# Другая модель того же размера даёт около нуля — поиск тогда случаен.
+SAME_MODEL_COSINE = 0.9
+_model_checks: dict[tuple[str, str], tuple[float, float | None]] = {}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+    return dot / norm if norm else 0.0
+
+
+def _stored_sample(info: CollectionInfo, conf: Config) -> tuple[str, list[float]] | None:
+    result = _request(
+        "POST", _c(info.name) + "/points/scroll", conf, {"limit": 5, "with_payload": True, "with_vector": True}
+    )
+    for point in (result or {}).get("points", []) if isinstance(result, dict) else []:
+        vector = point.get("vector")
+        if isinstance(vector, dict):
+            vector = vector.get(info.vector_name) if info.vector_name else next(iter(vector.values()), None)
+        text = describe_point(point, info.name, conf)["text"]
+        if isinstance(vector, list) and vector and text:
+            return text, vector
+    return None
+
+
+def model_match(info: CollectionInfo, conf: Config, model: str) -> float | None:
+    """Насколько модель совпадает с той, что наполняла базу: 1.0 — та же. None — проверить нечем."""
+    key = (info.name, model)
+    cached = _model_checks.get(key)
+    if cached and time.monotonic() - cached[0] < INFO_TTL_SECONDS:
+        return cached[1]
+    sample = _stored_sample(info, conf)
+    if sample is None:
+        value = None
+    else:
+        text, stored = sample
+        mine = embed(text, conf, model)
+        value = round(_cosine(mine, stored), 3) if len(mine) == len(stored) else 0.0
+    _model_checks[key] = (time.monotonic(), value)
+    return value
 
 
 def search(query: str, limit: int = 6) -> dict[str, Any]:
@@ -409,6 +471,13 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
                         f"модель {model} даёт вектор {len(vector)}, а в коллекции «{name}» — {info.size}. "
                         "Укажите в QDRANT_EMBEDDING_MODEL ту модель, которой наполняли базу."
                     )
+                match = model_match(info, conf, model)
+                if match is not None and match < SAME_MODEL_COSINE:
+                    raise QuantError(
+                        f"база «{name}» наполнена другой моделью эмбеддингов, не {model} "
+                        f"(совпадение {match}). Укажите в QDRANT_EMBEDDING_MODEL ту, что использовал "
+                        "загрузчик; пока ищу по словам."
+                    )
                 points = _vector_search(vector, info, conf, limit)
                 modes.append(f"{name}: по смыслу ({model})")
             except QuantError as exc:
@@ -433,7 +502,11 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
 # --- проверка ----------------------------------------------------------------
 
 
-def probe(query: str = "тарифы") -> Iterator[str]:
+# Модели размером 3072, которые стоит проверить, если своя не подошла.
+CANDIDATES_3072 = ("openai/text-embedding-3-large", "google/gemini-embedding-001")
+
+
+def probe(query: str = "тарифы", extra_models: tuple[str, ...] = ()) -> Iterator[str]:
     """Что видно в Кванте — для самопроверки и `python -m app.quant`.
 
     Строки отдаются по мере готовности, с временем шага: если сервер
@@ -461,6 +534,8 @@ def probe(query: str = "тарифы") -> Iterator[str]:
     for name in names:
         yield f"[{name}] читаю настройки коллекции…"
         info = collection_info(name, conf)
+        if not extra_models and info.size == 3072:
+            extra_models = CANDIDATES_3072
         vector = f"вектор «{info.vector_name}»" if info.vector_name else "вектор без имени"
         points = "?" if info.points < 0 else info.points
         note = " — настройки не ответили, размер взят по записи" if info.points < 0 else ""
@@ -497,6 +572,34 @@ def probe(query: str = "тарифы") -> Iterator[str]:
                     yield f"[{name}] коллекция ПУСТА — документы в Квант ещё не загружены, искать нечего."
             except QuantError as exc:
                 yield f"[{name}] подсчёт записей не удался: {exc}"
+        if points_list:
+            everything = _scroll(name, conf)
+            docs: dict[str, int] = {}
+            roles: set[str] = set()
+            for point in everything:
+                title = describe_point(point, name, conf)["title"]
+                docs[title] = docs.get(title, 0) + 1
+                for layer in _layers(point.get("payload") or {}):
+                    value = layer.get("accessibleByRoles")
+                    for role in value if isinstance(value, list) else ([value] if value else []):
+                        roles.add(str(role))
+            listed = ", ".join(f"{title} ({count})" for title, count in sorted(docs.items(), key=lambda x: -x[1])[:20])
+            yield f"[{name}] документов: {len(docs)} — {listed}"
+            yield f"[{name}] роли в accessibleByRoles: {', '.join(sorted(roles)) or 'нет'}"
+
+            candidates = list(dict.fromkeys([m for m in (_embedding_model(conf, info), *extra_models) if m]))
+            for candidate in candidates:
+                try:
+                    match = model_match(info, conf, candidate)
+                except QuantError as exc:
+                    yield f"[{name}] модель {candidate}: проверить не удалось — {exc}"
+                    continue
+                if match is None:
+                    yield f"[{name}] модель {candidate}: нет записи с текстом и вектором для сверки"
+                elif match >= SAME_MODEL_COSINE:
+                    yield f"[{name}] модель {candidate}: ✔ ТА ЖЕ, что у базы (совпадение {match})"
+                else:
+                    yield f"[{name}] модель {candidate}: ✘ другая (совпадение {match}, у той же было бы ≈1.0)"
     yield f"Пробный поиск «{query}»…"
     result = search(query, limit=3)
     yield f"Пробный поиск: {result.get('status')}, {result.get('search_mode', '')}{took()}"
@@ -510,9 +613,15 @@ def main() -> int:
     from . import console
 
     console.setup()
-    query = " ".join(sys.argv[1:]) or "тарифы"
+    args = sys.argv[1:]
+    models: tuple[str, ...] = ()
+    if "--models" in args:
+        at = args.index("--models")
+        models = tuple(m.strip() for m in (args[at + 1] if at + 1 < len(args) else "").split(",") if m.strip())
+        del args[at:at + 2]
+    query = " ".join(args) or "тарифы"
     try:
-        for line in probe(query):
+        for line in probe(query, models):
             print(line, flush=True)
     except QuantError as exc:
         print(f"ОШИБКА: {exc}")

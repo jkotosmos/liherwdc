@@ -728,6 +728,15 @@ def check_quant() -> list[Check]:
                 f"{detail}; модель {model} даёт {len(vector)} — не та модель",
                 ["Укажите в QDRANT_EMBEDDING_MODEL модель, которой наполняли базу."],
             ))
+        elif info.points != 0 and (match := _quant_match(quant, info, conf, model)) is not None \
+                and match < quant.SAME_MODEL_COSINE:
+            checks.append(Check(
+                f"Квант: {name}", FAIL,
+                f"{detail}; база наполнена ДРУГОЙ моделью, не {model} (совпадение {match} из 1.0) — "
+                "поиск по смыслу был бы случайным, бот ищет по словам",
+                ["Узнайте у загрузчика модель эмбеддингов и задайте QDRANT_EMBEDDING_MODEL. "
+                 "Проверить кандидатов: python -m app.quant --models модель1,модель2"],
+            ))
         elif info.points == 0:
             checks.append(Check(
                 f"Квант: {name}", WARN, f"{detail}; поиск по смыслу ({model}) готов, но коллекция пуста",
@@ -736,6 +745,13 @@ def check_quant() -> list[Check]:
         else:
             checks.append(Check(f"Квант: {name}", OK, f"{detail}; поиск по смыслу ({model})"))
     return checks
+
+
+def _quant_match(quant: Any, info: Any, conf: Any, model: str) -> float | None:
+    try:
+        return quant.model_match(info, conf, model)
+    except quant.QuantError:
+        return None
 
 
 def run_groups() -> list[tuple[str, list[Check]]]:
