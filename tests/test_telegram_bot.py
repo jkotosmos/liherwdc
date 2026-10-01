@@ -947,3 +947,25 @@ def test_stranger_logged_with_real_id(monkeypatch, caplog) -> None:
         bot._handle_update(message("привет", user_id=STRANGER))
     assert api.calls == []
     assert str(STRANGER) in caplog.text and "TELEGRAM_ALLOWED_USERS" in caplog.text
+
+
+class TestMenuForNewChats:
+    def test_menu_is_installed_when_user_first_writes(self, monkeypatch) -> None:
+        """Пока человек не нажал «Старт», Telegram отвечает chat not found — ставим позже."""
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        calls = []
+        started = set()
+
+        def set_my_commands(commands, chat_id):
+            if chat_id not in started:
+                raise RuntimeError("setMyCommands: Bad Request: chat not found")
+            calls.append(chat_id)
+
+        api.set_my_commands = set_my_commands
+        bot._install_menu_button()
+        assert calls == [] and ALLOWED not in bot._menu_ready
+
+        started.add(ALLOWED)
+        bot._ensure_menu(ALLOWED)
+        bot._ensure_menu(ALLOWED)  # второй раз не дёргаем Telegram
+        assert calls == [ALLOWED]

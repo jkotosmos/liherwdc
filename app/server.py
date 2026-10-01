@@ -34,6 +34,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
 )
 logger = logging.getLogger("operon")
+# httpx пишет каждый запрос с полным адресом, а в адресе Telegram — токен бота.
+# В консоль и журналы его выводить незачем.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 STATIC_DIR = BASE_DIR / "static"
 

@@ -90,6 +90,8 @@ class TelegramBot:
         self._api = api or TelegramAPI(settings.telegram_token)
         self._agent = agent or default_agent
         self._allowed = settings.telegram_allowed_users
+        # Кому меню (команды, кнопка Mini App) уже поставлено.
+        self._menu_ready: set[int] = set()
         self._states: dict[int, ChatState] = {}
         self._offset: int | None = None
         self._stop = threading.Event()
@@ -198,6 +200,7 @@ class TelegramBot:
             return
         # Всё, что бот делает по этому сообщению, — от имени этого человека:
         # его Google, его /auth, его /check (integrations/accounts.py).
+        self._ensure_menu(user_id)
         with accounts.use(user_id):
             if "callback_query" in update:
                 self._handle_callback(update["callback_query"])
@@ -305,25 +308,37 @@ class TelegramBot:
 
     # --- Mini App ---
 
-    def _install_menu_button(self) -> None:
+    def _install_menu_button(self, users: Any = None) -> None:
         """Список команд и кнопка «Открыть» — только тем, кто в белом списке.
 
         Показывать их всем по умолчанию значило бы сообщить посторонним, что
         бот умеет больше, чем молчать. Сбой здесь не мешает работе бота.
+
+        Пока человек не нажал «Старт», Telegram отвечает «chat not found»:
+        такому ставим меню при первом его сообщении (_ensure_menu).
         """
-        for user_id in self._allowed:
-            try:
-                self._api.set_my_commands(menu.BOT_COMMANDS, user_id)
-            except Exception as exc:  # noqa: BLE001 — список команд необязателен
-                logger.warning("Не удалось задать команды для %s: %s", user_id, exc)
         url = miniapp_url()
-        if not url:
-            return
-        for user_id in self._allowed:
-            try:
-                self._api.set_chat_menu_button(user_id, "Открыть", url)
-            except Exception as exc:  # noqa: BLE001 — кнопка необязательна
-                logger.warning("Не удалось поставить кнопку Mini App для %s: %s", user_id, exc)
+        for user_id in sorted(self._allowed if users is None else users):
+            steps = [("команды", lambda uid=user_id: self._api.set_my_commands(menu.BOT_COMMANDS, uid))]
+            if url:
+                steps.append(("кнопку Mini App", lambda uid=user_id: self._api.set_chat_menu_button(uid, "Открыть", url)))
+            not_started = False
+            for name, step in steps:
+                try:
+                    step()
+                except Exception as exc:  # noqa: BLE001 — меню необязательно
+                    if "chat not found" in str(exc):
+                        not_started = True
+                        break
+                    logger.warning("Не удалось задать %s для %s: %s", name, user_id, exc)
+            if not_started:
+                logger.info("Меню для %s поставлю, когда он откроет бота и нажмёт «Старт»", user_id)
+            else:
+                self._menu_ready.add(user_id)
+
+    def _ensure_menu(self, user_id: int) -> None:
+        if user_id not in self._menu_ready:
+            self._install_menu_button({user_id})
 
     def _handle_menu(self, callback: dict[str, Any], chat_id: int, data: str) -> None:
         """Кнопки меню: раздел → действия → запрос ассистенту или команда."""
