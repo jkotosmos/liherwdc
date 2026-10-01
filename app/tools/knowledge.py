@@ -22,6 +22,13 @@ def _kb_search(tool_input: dict[str, Any]) -> Any:
 
     stats = knowledge_base.stats
     if not stats["documents"]:
+        from .. import quant
+
+        if quant.config().enabled:
+            return {
+                "status": "empty_knowledge_base",
+                "hint": "В бота документы не загружали — основная база в Кванте: ищи через quant_search.",
+            }
         return {"status": "empty_knowledge_base", "hint": EMPTY_KB_HINT.format(root=stats["root"])}
 
     top_k = int(tool_input.get("top_k") or 6)

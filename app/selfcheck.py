@@ -688,6 +688,51 @@ def check_knowledge_base() -> list[Check]:
 MARK = {OK: "  OK  ", WARN: " ВНИМ ", FAIL: " СБОЙ ", SKIP: "  --  "}
 
 
+def check_quant() -> list[Check]:
+    from . import quant
+
+    conf = quant.config()
+    if not conf.enabled:
+        return [Check("Квант", SKIP, "QDRANT_URL не задан")]
+    checks: list[Check] = []
+    try:
+        quant.reset_cache()
+        names = quant.collection_names(conf)
+    except quant.QuantError as exc:
+        return [Check("Квант: подключение", FAIL, str(exc), ["Проверьте QDRANT_URL и QDRANT_API_KEY."])]
+    if not names:
+        return [Check("Квант: коллекции", WARN, "подключено, но коллекций нет")]
+    checks.append(Check("Квант: подключение", OK, f"{conf.url}, коллекции: {', '.join(names)}"))
+    for name in names:
+        try:
+            info = quant.collection_info(name, conf)
+        except quant.QuantError as exc:
+            checks.append(Check(f"Квант: {name}", FAIL, str(exc)))
+            continue
+        model = conf.embedding_model or quant.KNOWN_SIZES.get(info.size, "")
+        detail = f"записей {info.points}, вектор {info.size or '?'}"
+        if not model:
+            checks.append(Check(
+                f"Квант: {name}", WARN, detail + "; поиск только по словам",
+                ["Укажите QDRANT_EMBEDDING_MODEL — модель, которой наполняли базу: поиск станет по смыслу."],
+            ))
+            continue
+        try:
+            vector = quant.embed("проверка", conf, model)
+        except quant.QuantError as exc:
+            checks.append(Check(f"Квант: {name}", WARN, f"{detail}; {exc} — пока поиск по словам"))
+            continue
+        if len(vector) != info.size:
+            checks.append(Check(
+                f"Квант: {name}", FAIL,
+                f"{detail}; модель {model} даёт {len(vector)} — не та модель",
+                ["Укажите в QDRANT_EMBEDDING_MODEL модель, которой наполняли базу."],
+            ))
+        else:
+            checks.append(Check(f"Квант: {name}", OK, f"{detail}; поиск по смыслу ({model})"))
+    return checks
+
+
 def run_groups() -> list[tuple[str, list[Check]]]:
     """Все проверки по группам. Упавшая проверка не лишает отчёта об остальных."""
     groups = [
@@ -698,6 +743,7 @@ def run_groups() -> list[tuple[str, list[Check]]]:
         ("Google", check_google),
         ("Интернет", check_search),
         ("База знаний", check_knowledge_base),
+        ("Квант (Qdrant)", check_quant),
     ]
     results = []
     for title, runner in groups:

@@ -18,6 +18,7 @@ from typing import Any
 import anthropic
 
 from .config import settings
+from . import quant
 from .integrations import accounts, google_client
 from .llm import LLMError, build_backend
 from .model_choice import current_model
@@ -662,6 +663,7 @@ class OperonAgent:
             integrations={
                 "google": google_client.status(),
                 "web_search": settings.web_search_enabled,
+                "quant": quant.config().enabled,
             },
         )
 

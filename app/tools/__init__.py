@@ -6,7 +6,7 @@
 """
 
 from ..config import settings
-from . import calc, calendar, drive, knowledge, kpi, outbox, protocol, remind, tasks, web  # noqa: F401 — импорт ради регистрации
+from . import calc, calendar, drive, knowledge, kpi, outbox, protocol, quant, remind, tasks, web  # noqa: F401 — импорт ради регистрации
 from .base import IntegrationUnavailable, Preview, ToolError, ToolRegistry, ToolSpec, registry
 
 # Серверный поиск Anthropic доступен только при прямом доступе к её API.
