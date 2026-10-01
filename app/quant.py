@@ -50,7 +50,7 @@ TIMEOUT = httpx.Timeout(25.0, connect=15.0)
 INFO_TIMEOUT = httpx.Timeout(12.0, connect=10.0)
 INFO_TTL_SECONDS = 600
 
-TEXT_KEYS = ("page_content", "content", "text", "chunk", "chunk_text", "document", "body", "pageContent")
+TEXT_KEYS = ("page_content", "pageContent", "content", "text", "chunk", "chunk_text", "document", "body")
 TITLE_KEYS = ("title", "document_title", "doc_title", "file_name", "filename", "name", "source_name")
 LINK_KEYS = ("url", "link", "webViewLink", "web_view_link", "source_url", "file_url", "doc_url", "source")
 DATE_KEYS = (
@@ -81,6 +81,10 @@ class Config:
     embedding_url: str
     embedding_key: str
     text_field: str
+    # Роли, документы которых боту можно показывать (metadata.accessibleByRoles).
+    # Пусто — без фильтра.
+    roles: tuple[str, ...] = ()
+    roles_field: str = "metadata.accessibleByRoles"
 
     @property
     def enabled(self) -> bool:
@@ -111,6 +115,8 @@ def config() -> Config:
         embedding_url=(env("QDRANT_EMBEDDING_URL") or gateway).rstrip("/"),
         embedding_key=env("QDRANT_EMBEDDING_KEY") or settings.api_key,
         text_field=env("QDRANT_TEXT_FIELD"),
+        roles=tuple(r.strip() for r in env("QDRANT_ROLES").split(",") if r.strip()),
+        roles_field=env("QDRANT_ROLES_FIELD") or "metadata.accessibleByRoles",
     )
 
 
@@ -314,13 +320,21 @@ def _embedding_model(conf: Config, info: CollectionInfo) -> str:
     return conf.embedding_model or KNOWN_SIZES.get(info.size, "")
 
 
+def _access_filter(conf: Config) -> list[dict]:
+    """Только документы, доступные ролям из QDRANT_ROLES: ТЗ — «в рамках прав»."""
+    if not conf.roles:
+        return []
+    return [{"key": conf.roles_field, "match": {"any": list(conf.roles)}}]
+
+
 def _vector_search(query_vector: list[float], info: CollectionInfo, conf: Config, limit: int) -> list[dict]:
     vector: Any = {"name": info.vector_name, "vector": query_vector} if info.vector_name else query_vector
     result = _request(
         "POST",
         _c(info.name) + "/points/search",
         conf,
-        {"vector": vector, "limit": limit, "with_payload": True},
+        {"vector": vector, "limit": limit, "with_payload": True}
+        | ({"filter": {"must": _access_filter(conf)}} if conf.roles else {}),
     )
     return result if isinstance(result, list) else []
 
@@ -354,7 +368,12 @@ def _text_search(query: str, info: CollectionInfo, conf: Config, limit: int) -> 
         "POST",
         _c(info.name) + "/points/scroll",
         conf,
-        {"filter": {"should": should}, "limit": 200, "with_payload": True, "with_vector": False},
+        {
+            "filter": {"should": should, **({"must": _access_filter(conf)} if conf.roles else {})},
+            "limit": 200,
+            "with_payload": True,
+            "with_vector": False,
+        },
     )
     points = (result or {}).get("points", []) if isinstance(result, dict) else []
     scored = []

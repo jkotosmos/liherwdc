@@ -57,7 +57,7 @@ class FakeQdrant:
 @pytest.fixture
 def qdrant(monkeypatch):
     for name in ("QDRANT_COLLECTION", "QDRANT_VECTOR_NAME", "QDRANT_EMBEDDING_MODEL", "QDRANT_TEXT_FIELD",
-                 "QDRANT_API_KEY"):
+                 "QDRANT_API_KEY", "QDRANT_ROLES"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("QDRANT_URL", URL + "/")
     monkeypatch.setenv("QDRANTSERVICEAPI_KEY", "secret")  # имя ключа из панели Amvera
@@ -216,3 +216,26 @@ def test_probe_says_when_collection_is_empty(qdrant, monkeypatch) -> None:
     monkeypatch.setattr(quant.httpx, "request", empty)
     lines = "\n".join(quant.probe("тарифы"))
     assert "точный подсчёт записей: 0" in lines and "коллекция ПУСТА" in lines
+
+
+def test_roles_filter_limits_results(qdrant, monkeypatch) -> None:
+    """В Кванте есть metadata.accessibleByRoles — бот видит только разрешённое."""
+    monkeypatch.setenv("QDRANT_ROLES", "owner, manager")
+    monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
+    quant.search("тарифы")
+    body = next(body for _, path, body in qdrant.calls if path.endswith("/points/search"))
+    assert body["filter"] == {"must": [{"key": "metadata.accessibleByRoles", "match": {"any": ["owner", "manager"]}}]}
+
+    monkeypatch.delenv("QDRANT_EMBEDDING_MODEL")
+    qdrant.calls.clear()
+    quant.search("тарифы")
+    scroll = next(body for _, path, body in qdrant.calls if path.endswith("/points/scroll"))
+    assert scroll["filter"]["must"][0]["match"] == {"any": ["owner", "manager"]}
+
+
+def test_no_roles_no_filter(qdrant, monkeypatch) -> None:
+    monkeypatch.delenv("QDRANT_ROLES", raising=False)
+    monkeypatch.setenv("QDRANT_EMBEDDING_MODEL", "some/embedder")
+    quant.search("тарифы")
+    body = next(body for _, path, body in qdrant.calls if path.endswith("/points/search"))
+    assert "filter" not in body
