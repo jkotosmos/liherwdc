@@ -123,10 +123,10 @@ class TestProviderConfiguration:
         assert config.llm_protocol == "openai"
         assert config.api_key == "ra-key"
 
-    def test_routerai_requires_explicit_model(self, monkeypatch) -> None:
-        """У шлюза свой каталог — угадывать имя модели нельзя."""
+    def test_routerai_has_a_working_default_model(self, monkeypatch) -> None:
+        """Свежий сервер без OPERON_MODEL должен отвечать: модель проверена на RouterAI."""
         config = self._settings_with(monkeypatch, ROUTERAI_API_KEY="ra-key")
-        assert config.model == ""
+        assert config.model == "openai/gpt-4.1-mini"
 
     def test_routerai_enables_own_internet_tools(self, monkeypatch) -> None:
         """Серверный поиск Anthropic недоступен — работают собственные инструменты."""

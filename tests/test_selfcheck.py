@@ -78,8 +78,8 @@ class TestSettingsCheck:
             "ANTHROPIC_API_KEY", "OPERON_MODEL", "OPERON_ACCESS_PASSWORD",
         ):
             monkeypatch.delenv(name, raising=False)
-        # У стороннего шлюза нет модели по умолчанию — её обязан задать человек.
-        conf = Settings(provider="routerai", **overrides)
+        # У своего шлюза нет модели по умолчанию — её обязан задать человек.
+        conf = Settings(provider="custom", **overrides)
         monkeypatch.setattr(selfcheck, "settings", conf)
         return conf
 

@@ -214,16 +214,32 @@ Windows к нужному виду, меняет порт на 38417 (на об�
 Минимальный набор:
 
 ```
-ROUTERAI_API_KEY         <ключ RouterAI>
-OPERON_MODEL             <имя модели из app.probe>
-OPERON_ACCESS_PASSWORD   <ваш пароль на веб-чат>
-OPERON_TOKEN_KEY         <парольная фраза для шифрования токена Google>
-TELEGRAM_BOT_TOKEN       <токен от @BotFather>
-TELEGRAM_ALLOWED_USERS   <ваш Telegram ID от @userinfobot>
-OPERON_PUBLIC_URL        https://<проект>.amvera.io
-OPERON_ORG_NAME          OPERON
-OPERON_TIMEZONE          Europe/Moscow
+ROUTERAI_API_KEY          <ключ RouterAI>
+OPERON_MODEL              openai/gpt-4.1-mini   (по умолчанию для RouterAI, можно не задавать)
+OPERON_ACCESS_PASSWORD    <ваш пароль на веб-чат>
+OPERON_TOKEN_KEY          <парольная фраза для шифрования токена Google>
+TELEGRAM_BOT_TOKEN        <токен от @BotFather>
+TELEGRAM_ALLOWED_USERS    <ID через запятую; первый — владелец основного Google>
+OPERON_PUBLIC_URL         https://<проект>.amvera.io
+OPERON_ORG_NAME           OPERON
+OPERON_TIMEZONE           Europe/Moscow
+GOOGLE_CLIENT_ID          <ID OAuth-клиента>
+GOOGLE_CLIENT_SECRET      <секрет OAuth-клиента>
+OPERON_GOOGLE_CLIENT_TYPE desktop   (обязательно для клиента типа Desktop — см. ниже)
+QDRANT_URL                https://<база>.amvera.io   (Квант)
+QDRANT_API_KEY            <ключ Qdrant>
+QDRANT_EMBEDDING_MODEL    openai/text-embedding-3-large
 ```
+
+**Не переносите с компьютера** `OPERON_HOST`, `OPERON_PORT` и `OPERON_PROXY`:
+первые два заданы в `Dockerfile`, прокси на сервере не нужен.
+
+**Один токен — один запущенный бот.** Перед запуском на Amvera остановите бота
+на компьютере, иначе Telegram отдаёт сообщения то одному, то другому (409).
+
+**Google на сервере — заново.** Токены с компьютера на сервер не переезжают:
+после запуска каждый, кому нужен свой Google, отправляет боту `/auth`.
+Индекс Кванта (`quant_index.json`) бот построит сам при первом вопросе.
 
 Адрес (`https://routerai.ru/api/v1`) и протокол (`openai`) для RouterAI
 подставляются автоматически — задавать их не нужно.

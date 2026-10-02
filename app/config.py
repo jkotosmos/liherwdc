@@ -104,8 +104,13 @@ def _default_model(provider: str) -> str:
     if provider == "openrouter":
         # В OpenRouter идентификаторы моделей включают вендора.
         return "anthropic/claude-opus-4.1"
-    if provider in {"custom", "routerai"}:
-        # У шлюза свой каталог — имя модели обязан задать пользователь.
+    if provider == "routerai":
+        # Проверена на RouterAI с вызовом инструментов. Без значения по
+        # умолчанию свежий сервер без OPERON_MODEL не ответил бы ни на что.
+        # Сменить — OPERON_MODEL или выбор в Mini App.
+        return "openai/gpt-4.1-mini"
+    if provider == "custom":
+        # У своего шлюза свой каталог — имя модели обязан задать пользователь.
         # Посмотреть доступные: python -m app.probe
         return ""
     return "claude-opus-5"
