@@ -191,7 +191,8 @@ class TestGoogleRedirectAdvice:
         )
         redirect = [c for c in selfcheck.check_google() if c.name == "Google: адрес возврата"][0]
         assert redirect.status == OK
-        assert "так и нужно" in redirect.detail
+        assert "Desktop" in redirect.detail
+        assert any("redirect_uri_mismatch" in hint for hint in redirect.hints)
         assert redirect.hints == [], "советовать здесь нечего"
 
     def test_loopback_without_declared_type_asks_which_it_is(self, monkeypatch) -> None:

@@ -322,7 +322,11 @@ def check_google() -> list[Check]:
                 Check(
                     "Google: адрес возврата",
                     OK,
-                    client["redirect_uri"] + " (клиент Desktop — так и нужно)",
+                    client["redirect_uri"] + " (заявлен клиент Desktop)",
+                    # Тип клиента Google отсюда не видно — только то, что заявлено.
+                    ["Если Google ответит redirect_uri_mismatch — клиент на самом деле «Web application»: "
+                     f"добавьте {client['redirect_uri']} в его Authorized redirect URIs "
+                     "(Google Cloud → APIs & Services → Credentials)."],
                 )
             )
         else:

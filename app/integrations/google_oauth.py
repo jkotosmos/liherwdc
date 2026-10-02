@@ -389,8 +389,9 @@ def _describe_exchange_error(exc: Exception) -> str:
 # Ошибки, которые Google показывает в браузере, до бота они не доходят.
 TROUBLESHOOTING = (
     "\n\nЕсли Google показал ошибку:\n"
-    "• redirect_uri_mismatch — тип клиента в Google Cloud не тот: для этого режима "
-    "нужен «Desktop app» (или задайте OPERON_GOOGLE_CLIENT_TYPE=web и адрес возврата).\n"
+    f"• redirect_uri_mismatch — клиент в Google Cloud типа «Web application»: добавьте "
+    f"{settings.oauth_redirect_uri} в его Authorized redirect URIs (Credentials → клиент), "
+    "подождите 5 минут и повторите /auth. Либо создайте клиент типа «Desktop app».\n"
     "• «Доступ заблокирован» / org_internal — вход не тем аккаунтом: экран согласия "
     "Internal пускает только аккаунты вашей организации Workspace.\n"
     "• access_denied / «приложение не проверено, тестирование» — экран согласия в режиме "
