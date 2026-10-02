@@ -501,7 +501,12 @@ def _startup_report() -> None:
     logger.info(
         "База знаний: %s документов в %s", kb["documents"], kb["root"]
     )
-    if not kb["documents"]:
+    from . import quant
+
+    quant_conf = quant.config()
+    if quant_conf.enabled:
+        logger.info("Квант подключён: %s — основная база знаний", quant_conf.url)
+    elif not kb["documents"]:
         logger.warning(
             "База знаний пуста — агент будет честно отвечать «данных нет». "
             "Положите документы в %s (структура описана в knowledge_base/README.md).",
