@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -155,6 +156,16 @@ def _free(query: str, limit: int) -> tuple[list[dict[str, str]], list[str]]:
         for item in results
     ], failures
 
+# Платный поиск, который отказал (403 с серверов в РФ, кончился лимит, нет
+# сети), не дёргаем на каждом запросе: полчаса сразу идём в бесплатный.
+PAID_PAUSE_SECONDS = 1800
+_paid_paused_until: dict[str, float] = {}
+
+
+def _paid_paused(provider: str) -> bool:
+    return time.monotonic() < _paid_paused_until.get(provider, 0.0)
+
+
 PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "google": _google_cse, "free": _free}
 
 
@@ -222,6 +233,10 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
     try:
         if provider == "free":
             results, failures = _free(query, limit)
+        elif _paid_paused(provider):
+            results, failures = _free(query, limit)
+            failures = [f"{provider} недавно отказал — сразу бесплатный поиск", *failures]
+            provider = "free"
         else:
             results = PROVIDERS[provider](query, limit)
     except KeyError as exc:
@@ -234,7 +249,8 @@ def _internet_search(tool_input: dict[str, Any]) -> Any:
             if isinstance(exc, httpx.HTTPStatusError)
             else f"Не удалось обратиться к поисковому сервису {provider}: {explain(exc)}"
         )
-        logger.warning("%s — переключаюсь на бесплатный поиск", reason)
+        logger.warning("%s — переключаюсь на бесплатный поиск на 30 мин", reason)
+        _paid_paused_until[provider] = time.monotonic() + PAID_PAUSE_SECONDS
         try:
             results, failures = _free(query, limit)
         except ToolError as free_exc:

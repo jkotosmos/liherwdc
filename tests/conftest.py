@@ -30,3 +30,14 @@ import pytest  # noqa: E402
 @pytest.fixture
 def tmp_data_dir() -> Path:
     return _TMP / "data"
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_paid_search_pause():
+    """Пауза платного поиска после отказа не должна перетекать между тестами."""
+    from app.tools import web
+
+    web._paid_paused_until.clear()
+    yield
+    web._paid_paused_until.clear()

@@ -295,3 +295,27 @@ class TestDamagedKeyAtRuntime:
 
         monkeypatch.setattr(web.httpx, "post", fake_post)
         assert web._internet_search({"query": "рынок"})["results_count"] == 2
+
+
+def test_refusing_paid_search_is_paused(monkeypatch) -> None:
+    """Tavily с серверов в РФ отвечает 403 — не стучаться в него на каждом запросе."""
+    import httpx
+
+    from app.tools import web
+
+    calls = []
+
+    def tavily(query, limit):
+        calls.append(query)
+        request = httpx.Request("POST", "https://api.tavily.com/search")
+        raise httpx.HTTPStatusError("403", request=request, response=httpx.Response(403, request=request))
+
+    monkeypatch.setenv("OPERON_SEARCH_PROVIDER", "tavily")
+    monkeypatch.setitem(web.PROVIDERS, "tavily", tavily)
+    monkeypatch.setattr(web, "_free", lambda q, n: ([web._normalize("t", "https://x.ru", "s")], []))
+    monkeypatch.setattr(web, "damaged_keys", lambda names: [])
+
+    first = web._internet_search({"query": "рынок"})
+    second = web._internet_search({"query": "рынок 2"})
+    assert first["provider"] == second["provider"] == "free"
+    assert calls == ["рынок"], "второй запрос в отказавший Tavily не идёт"

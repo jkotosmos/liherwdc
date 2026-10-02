@@ -669,6 +669,14 @@ def check_knowledge_base() -> list[Check]:
                 + (f", разделы: {', '.join(stats['categories'][:5])}" if stats.get("categories") else ""),
             )
         ]
+    from . import quant
+
+    if quant.config().enabled:
+        return [Check(
+            "База знаний",
+            OK,
+            "документов, загруженных прямо в бота, нет — основная база в Кванте (ниже)",
+        )]
     return [
         Check(
             "База знаний",
