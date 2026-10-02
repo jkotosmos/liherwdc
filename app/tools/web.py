@@ -190,13 +190,17 @@ def _describe_search_error(provider: str, exc: httpx.HTTPStatusError) -> str:
             detail = detail or str(payload.get("message") or "")
     except ValueError:
         detail = exc.response.text[:300]
+    if "<html" in detail.lower() or "<head" in detail.lower():
+        # Страница-заглушка вместо ответа API: в ней нет ничего полезного.
+        detail = ""
 
     if detail:
         return f"Поисковый сервис {provider} ответил {code}: {detail[:400]}"
 
     hint = {
         401: "ключ не принят — проверьте его.",
-        403: "доступ запрещён: ключ, права или отключённый API.",
+        403: "доступ запрещён: ключ, права, отключённый API или сервис не пускает с этого сервера "
+             "(Tavily, например, блокирует адреса в РФ). Бесплатный поиск работает вместо него.",
         429: "исчерпан лимит запросов тарифа.",
     }.get(code, "проверьте ключ и лимиты тарифа.")
     return f"Поисковый сервис {provider} ответил {code}: {hint}"

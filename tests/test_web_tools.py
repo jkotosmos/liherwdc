@@ -319,3 +319,14 @@ def test_refusing_paid_search_is_paused(monkeypatch) -> None:
     second = web._internet_search({"query": "рынок 2"})
     assert first["provider"] == second["provider"] == "free"
     assert calls == ["рынок"], "второй запрос в отказавший Tavily не идёт"
+
+
+def test_html_error_page_is_not_shown() -> None:
+    import httpx
+
+    from app.tools import web
+
+    request = httpx.Request("POST", "https://api.tavily.com/search")
+    response = httpx.Response(403, request=request, text="<html><head><title>403 Forbidden</title></head></html>")
+    text = web._describe_search_error("tavily", httpx.HTTPStatusError("403", request=request, response=response))
+    assert "<html" not in text and "403" in text and "РФ" in text
