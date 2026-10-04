@@ -389,15 +389,31 @@ def _describe_exchange_error(exc: Exception) -> str:
 # Ошибки, которые Google показывает в браузере, до бота они не доходят.
 TROUBLESHOOTING = (
     "\n\nЕсли Google показал ошибку:\n"
-    f"• redirect_uri_mismatch — клиент в Google Cloud типа «Web application»: добавьте "
-    f"{settings.oauth_redirect_uri} в его Authorized redirect URIs (Credentials → клиент), "
-    "подождите 5 минут и повторите /auth. Либо создайте клиент типа «Desktop app».\n"
+    "• redirect_uri_mismatch — проще всего создать в Google Cloud клиент типа «Desktop app» "
+    "(Credentials → Create credentials → OAuth client ID) и поставить его ID и секрет в "
+    "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET: ему адреса возврата не нужны. Либо добавьте адрес "
+    "ниже в Authorized redirect URIs того клиента, чей ID указан ниже.\n"
     "• «Доступ заблокирован» / org_internal — вход не тем аккаунтом: экран согласия "
     "Internal пускает только аккаунты вашей организации Workspace.\n"
     "• access_denied / «приложение не проверено, тестирование» — экран согласия в режиме "
     "Testing: добавьте свой адрес в Test users или нажмите Publish app.\n"
     "• «API не включён» — включите Drive, Calendar и Sheets API в том же проекте."
 )
+
+
+def _client_line() -> str:
+    """Какой клиент и какой адрес возврата уходят в Google — сверить с консолью."""
+    try:
+        config = _client_config()
+    except OAuthError:
+        return ""
+    section = config.get("installed") or config.get("web") or {}
+    client_id = str(section.get("client_id", ""))
+    short = client_id.split(".apps.googleusercontent.com")[0]
+    return (
+        f"\n\nДля сверки в Google Cloud: клиент {short}, "
+        f"адрес возврата {settings.oauth_redirect_uri}"
+    )
 
 
 def instructions() -> str:
@@ -410,6 +426,7 @@ def instructions() -> str:
             "я напишу, когда токен сохранится.\n\n"
             f"Жду ответа {settings.oauth_wait_minutes} мин."
             + TROUBLESHOOTING
+            + _client_line()
         )
     return (
         "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
@@ -421,6 +438,7 @@ def instructions() -> str:
         "следующим сообщением.\n\n"
         f"Ссылка действует ограниченное время, жду код {settings.oauth_wait_minutes} мин."
         + TROUBLESHOOTING
+        + _client_line()
     )
 
 
