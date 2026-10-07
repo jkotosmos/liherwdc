@@ -290,7 +290,12 @@ def check_telegram() -> list[Check]:
 
 
 def check_google() -> list[Check]:
-    from .integrations import google_client, google_oauth
+    from .integrations import google_client, google_oauth, google_sa
+
+    if google_sa.problem():
+        return [Check("Google: сервисный аккаунт", FAIL, google_sa.problem())]
+    if google_sa.enabled():
+        return _check_google_service_account()
 
     checks: list[Check] = []
     client = google_oauth.describe_client()
@@ -386,6 +391,29 @@ SCOPE_PURPOSE = {
     "https://www.googleapis.com/auth/calendar.events": "календарь: чтение и создание событий",
     "https://www.googleapis.com/auth/calendar.readonly": "календарь: только чтение",
 }
+
+
+def _check_google_service_account() -> list[Check]:
+    """Вход через сервисный аккаунт: ключ, подключённая почта этого человека, живые запросы."""
+    from .integrations import google_client, google_sa
+
+    checks = [Check("Google: сервисный аккаунт", OK, google_sa.email())]
+    link = google_sa.current_link()
+    if link is None:
+        checks.append(Check(
+            "Google: ваша почта", WARN, "не подключена",
+            ["Отправьте боту /auth ваша@почта — бот проверит доступ и подключит."],
+        ))
+        return checks
+    checks.append(Check("Google: ваша почта", OK, google_sa.describe_link(link)))
+    if link.get("mode") == "shared" and link.get("access") == "reader":
+        checks.append(Check(
+            "Google: права на календарь", WARN, "только чтение — встречи создавать нельзя",
+            ["Календарь → Настройки и общий доступ → право «Вносить изменения в мероприятия»."],
+        ))
+    google_client.reset_cache()
+    checks.extend(_google_live_checks())
+    return checks
 
 
 def _granted_scopes() -> set[str] | None:

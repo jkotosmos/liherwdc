@@ -15,7 +15,7 @@ from typing import Any
 from ..config import settings
 from ..errors import IntegrationUnavailable
 from ..net import configure_requests_session, httplib2_http
-from . import accounts, token_store
+from . import accounts, google_sa, token_store
 
 try:  # Google-библиотеки опциональны: без них агент запускается, но интеграции выключены.
     from google.auth.transport.requests import AuthorizedSession, Request
@@ -61,6 +61,9 @@ def _load_credentials() -> Any:
             f"({GOOGLE_IMPORT_ERROR}). Установите зависимости: pip install -r requirements.txt"
         )
 
+    if google_sa.enabled():
+        return _service_account_credentials(key)
+
     with _lock:
         cached = _cached.get(key)
         if cached is not None and cached.valid:
@@ -98,6 +101,48 @@ def _load_credentials() -> Any:
 
         _cached[key] = creds
         return creds
+
+
+SA_HINT = (
+    "Google для этого пользователя не подключён. Отправьте боту /auth — он подскажет, "
+    "как открыть доступ (личный Gmail) или подключит аккаунт организации сам."
+)
+
+
+def _service_account_credentials(key: str) -> Any:
+    link = google_sa.current_link()
+    if link is None:
+        raise IntegrationUnavailable(SA_HINT)
+    cache_key = f"sa:{key}:{link['email']}:{link.get('mode')}"
+    with _lock:
+        cached = _cached.get(cache_key)
+        if cached is None:
+            # Токен сервисного аккаунта обновляется сам при первом запросе.
+            cached = google_sa.credentials(link)
+            _cached[cache_key] = cached
+        return cached
+
+
+def mode() -> str:
+    """oauth — свой токен; delegated / shared — сервисный аккаунт; пусто — не подключено."""
+    if google_sa.enabled():
+        link = google_sa.current_link()
+        return str(link.get("mode")) if link else ""
+    return "oauth" if token_store.token_exists() else ""
+
+
+def default_calendar() -> str:
+    """Чей календарь по умолчанию. У сервисного аккаунта «primary» — его собственный, пустой."""
+    if google_sa.enabled():
+        link = google_sa.current_link()
+        if link and link.get("mode") == "shared":
+            return link["email"]
+    return "primary"
+
+
+def can_invite() -> bool:
+    """Рассылать приглашения участникам. Сервисный аккаунт без делегирования не может."""
+    return mode() != "shared"
 
 
 def refresh_error_message(exc: Exception) -> str:
@@ -199,6 +244,18 @@ def status() -> dict[str, Any]:
             "connected": False,
             "reason": "Библиотеки Google API не установлены",
             "hint": "pip install -r requirements.txt",
+        }
+    if google_sa.enabled():
+        link = google_sa.current_link()
+        if link is None:
+            return {"connected": False, "reason": "почта Google не подключена (сервисный аккаунт)",
+                    "hint": SA_HINT, "service_account": google_sa.email()}
+        return {
+            "connected": True,
+            "mode": link.get("mode"),
+            "scopes": list(google_sa.SCOPES),
+            "account_hint": link["email"],
+            "service_account": google_sa.email(),
         }
     if not token_store.token_exists():
         return {

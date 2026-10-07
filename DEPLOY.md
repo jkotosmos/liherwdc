@@ -385,6 +385,44 @@ curl -i https://<проект>.amvera.io/api/health?strict=1   # 503, если �
 
 Структура разделов и шаблоны — в [`knowledge_base/README.md`](knowledge_base/README.md).
 
+## Шаг 5а. Google через сервисный аккаунт (рекомендуется)
+
+Самый надёжный способ: нет экрана согласия, адресов возврата, тестового режима
+и предупреждения «приложение не проверено». Ключ кладётся на сервер один раз.
+
+**Один раз, в Google Cloud** (проект организации):
+
+1. **APIs & Services → Library**: включить Google Calendar API, Google Drive API,
+   Google Sheets API.
+2. **IAM & Admin → Service Accounts → Create service account** → имя `operon-bot`
+   → роли не нужны → Done.
+3. Открыть аккаунт → **Keys → Add key → Create new key → JSON** — скачается файл.
+4. Amvera → **Данные** → загрузить файл в `/data/credentials/` под именем
+   `service_account.json` (или вставить его содержимое в переменную
+   `GOOGLE_SERVICE_ACCOUNT_JSON`). Перезапустить приложение.
+
+**Аккаунты организации (Google Workspace) — людям делать ничего не нужно.**
+Администратор организации один раз: admin.google.com → Безопасность → Управление
+доступом к данным и API → **Делегирование в масштабе домена** → Добавить новый:
+ID клиента — `client_id` из JSON-файла, области (через запятую):
+
+```
+https://www.googleapis.com/auth/calendar.events,https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/drive.file
+```
+
+Дальше человек пишет боту `/auth kirill@firma.ru` — и всё. Либо заранее, без
+команд: переменная `GOOGLE_ACCOUNTS=1107365044=kirill@firma.ru`.
+
+**Личный Gmail.** Человек открывает доступ боту, как коллеге: calendar.google.com
+→ у своего календаря ⋮ → Настройки и общий доступ → Открыть доступ пользователям
+→ адрес сервисного аккаунта (`…@….iam.gserviceaccount.com`) → «Вносить изменения
+в мероприятия». Для документов — открыть нужные папки Диска тому же адресу.
+Затем `/auth почта@gmail.com`. В этом режиме Google не даёт рассылать
+приглашения участникам — бот пишет их в описание встречи.
+
+Если в организации внешний общий доступ к календарям ограничен, используйте
+делегирование выше — оно внешний доступ не требует.
+
 ## Шаг 5. Google Drive и Calendar
 
 Workspace и прохождение верификации не нужны: приложение личного

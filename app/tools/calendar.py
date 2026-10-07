@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from ..config import settings
+from ..integrations import google_client
 from ..integrations.google_client import HttpError, describe_http_error, get_service
 from .base import Preview, ToolError, ToolSpec, registry
 
@@ -61,8 +62,9 @@ def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
     }
 
 
-def list_events_between(day_from: date, day_to: date, calendar_id: str = "primary") -> list[dict[str, Any]]:
+def list_events_between(day_from: date, day_to: date, calendar_id: str = "") -> list[dict[str, Any]]:
     """События за период — для утренней сводки, без участия модели."""
+    calendar_id = calendar_id or google_client.default_calendar()
     start = datetime.combine(day_from, time.min).replace(tzinfo=settings.tz)
     end = datetime.combine(day_to, time.max).replace(tzinfo=settings.tz)
     events = (
@@ -82,8 +84,9 @@ def list_events_between(day_from: date, day_to: date, calendar_id: str = "primar
     return [_event_view(e, calendar_id) for e in events]
 
 
-def list_events_window(start: datetime, end: datetime, calendar_id: str = "primary") -> list[dict[str, Any]]:
+def list_events_window(start: datetime, end: datetime, calendar_id: str = "") -> list[dict[str, Any]]:
     """События, начинающиеся в интервале, — для напоминаний о встречах."""
+    calendar_id = calendar_id or google_client.default_calendar()
     events = (
         _calendar()
         .events()
@@ -101,8 +104,13 @@ def list_events_window(start: datetime, end: datetime, calendar_id: str = "prima
     return [_event_view(e, calendar_id) for e in events]
 
 
+def _send_updates() -> str:
+    """Уведомлять участников. Сервисному аккаунту без делегирования Google это запрещает."""
+    return "all" if google_client.can_invite() else "none"
+
+
 def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
-    calendar_id = (tool_input.get("calendar_id") or "primary").strip()
+    calendar_id = (tool_input.get("calendar_id") or google_client.default_calendar()).strip()
     now = datetime.now(settings.tz)
 
     time_min = tool_input.get("time_min")
@@ -176,9 +184,13 @@ def _build_event_body(tool_input: dict[str, Any]) -> dict[str, Any]:
         body["description"] = tool_input["description"]
     if tool_input.get("location"):
         body["location"] = tool_input["location"]
-    attendees = tool_input.get("attendees") or []
-    if attendees:
-        body["attendees"] = [{"email": email} for email in attendees if email]
+    attendees = [email for email in (tool_input.get("attendees") or []) if email]
+    if attendees and google_client.can_invite():
+        body["attendees"] = [{"email": email} for email in attendees]
+    elif attendees:
+        # Сервисный аккаунт без делегирования приглашать не может — Google
+        # отклонил бы всё событие. Участников сохраняем в описании.
+        body["description"] = (body.get("description", "") + "\n\nУчастники: " + ", ".join(attendees)).strip()
     reminder_minutes = tool_input.get("reminder_minutes")
     if reminder_minutes is not None:
         body["reminders"] = {
@@ -189,7 +201,7 @@ def _build_event_body(tool_input: dict[str, Any]) -> dict[str, Any]:
 
 
 def _calendar_create_event(tool_input: dict[str, Any]) -> Any:
-    calendar_id = (tool_input.get("calendar_id") or "primary").strip()
+    calendar_id = (tool_input.get("calendar_id") or google_client.default_calendar()).strip()
     body = _build_event_body(tool_input)
     try:
         created = (
@@ -208,7 +220,7 @@ def _calendar_create_event(tool_input: dict[str, Any]) -> Any:
 
 
 def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
-    calendar_id = (tool_input.get("calendar_id") or "primary").strip()
+    calendar_id = (tool_input.get("calendar_id") or google_client.default_calendar()).strip()
     event_id = (tool_input.get("event_id") or "").strip()
     if not event_id:
         raise ToolError("Не указан event_id.")
@@ -251,6 +263,10 @@ def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
             "overrides": [{"method": "popup", "minutes": int(tool_input["reminder_minutes"])}],
         }
     new_attendees = [e for e in (tool_input.get("add_attendees") or []) if e]
+    if new_attendees and not google_client.can_invite():
+        base = patch.get("description", current.get("description") or "")
+        patch["description"] = (base + "\n\nУчастники: " + ", ".join(new_attendees)).strip()
+        new_attendees = []
     if new_attendees:
         existing = current.get("attendees", [])
         known = {(a.get("email") or "").lower() for a in existing}
@@ -264,7 +280,7 @@ def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
         updated = (
             _calendar()
             .events()
-            .patch(calendarId=calendar_id, eventId=event_id, body=patch, sendUpdates="all")
+            .patch(calendarId=calendar_id, eventId=event_id, body=patch, sendUpdates=_send_updates())
             .execute()
         )
     except HttpError as exc:
@@ -296,14 +312,14 @@ def _shifted_end(current: dict[str, Any], new_start: dict[str, Any]) -> dict[str
 
 
 def _calendar_delete_event(tool_input: dict[str, Any]) -> Any:
-    calendar_id = (tool_input.get("calendar_id") or "primary").strip()
+    calendar_id = (tool_input.get("calendar_id") or google_client.default_calendar()).strip()
     event_id = (tool_input.get("event_id") or "").strip()
     if not event_id:
         raise ToolError("Не указан event_id.")
     try:
         current = _calendar().events().get(calendarId=calendar_id, eventId=event_id).execute()
         _calendar().events().delete(
-            calendarId=calendar_id, eventId=event_id, sendUpdates="all"
+            calendarId=calendar_id, eventId=event_id, sendUpdates=_send_updates()
         ).execute()
     except HttpError as exc:
         raise ToolError(describe_http_error(exc, "Удаление события")) from exc
@@ -345,7 +361,7 @@ def _describe_event(tool_input: dict[str, Any]) -> str:
     event_id = (tool_input.get("event_id") or "").strip()
     try:
         event = _calendar().events().get(
-            calendarId=(tool_input.get("calendar_id") or "primary").strip(), eventId=event_id
+            calendarId=(tool_input.get("calendar_id") or google_client.default_calendar()).strip(), eventId=event_id
         ).execute()
     except Exception:  # noqa: BLE001 — карточка должна показаться в любом случае
         return f"Событие {event_id or '?'}"
@@ -375,7 +391,7 @@ def _preview_update(tool_input: dict[str, Any]) -> Preview:
     return Preview(
         title="Изменить событие в календаре",
         summary=f"{event} будет изменено; участники получат уведомление.",
-        details={"Событие": event, "Календарь": tool_input.get("calendar_id") or "primary", **changes},
+        details={"Событие": event, "Календарь": tool_input.get("calendar_id") or "основной", **changes},
     )
 
 
@@ -386,7 +402,7 @@ def _preview_delete(tool_input: dict[str, Any]) -> Preview:
         summary=f"{event} будет удалено безвозвратно, участникам уйдёт отмена.",
         details={
             "Событие": event,
-            "Календарь": tool_input.get("calendar_id") or "primary",
+            "Календарь": tool_input.get("calendar_id") or "основной",
             "Идентификатор события": tool_input.get("event_id", ""),
         },
     )

@@ -14,6 +14,7 @@ from ..kb.documents import (
     extract_text,
     legacy_alternative,
 )
+from ..integrations import google_client, google_sa
 from ..integrations.google_client import (
     HttpError,
     authorized_session,
@@ -83,6 +84,9 @@ def _drive_search(tool_input: dict[str, Any]) -> Any:
     limit = min(max(int(tool_input.get("limit") or 10), 1), 50)
 
     clauses = ["trashed = false"]
+    owner_filter = _owner_filter()
+    if owner_filter:
+        clauses.append(owner_filter)
     if query:
         clauses.append(f"(name contains '{_escape(query)}' or fullText contains '{_escape(query)}')")
     mime_type = (tool_input.get("mime_type") or "").strip()
@@ -361,7 +365,28 @@ CREATE_MIME_BY_FORMAT = {
 }
 
 
+def _owner_filter() -> str:
+    """Сервисный аккаунт с общим доступом видит всё, что ему открыли все люди.
+
+    Каждому показываем только файлы, к которым у него самого есть доступ:
+    ТЗ — «в рамках прав пользователя».
+    """
+    if not google_sa.enabled() or google_client.mode() != "shared":
+        return ""
+    link = google_sa.current_link() or {}
+    mail = _escape(link.get("email", ""))
+    if not mail:
+        return ""
+    return f"('{mail}' in owners or '{mail}' in writers or '{mail}' in readers)"
+
+
 def _drive_create_file(tool_input: dict[str, Any]) -> Any:
+    if google_client.mode() == "shared":
+        raise ToolError(
+            "В режиме общего доступа бот не создаёт файлы на Google Диске: у сервисного аккаунта "
+            "нет своего места на Диске. Подготовь документ через document_prepare — он придёт "
+            "файлом в чат, пользователь сам положит его куда нужно."
+        )
     try:
         from googleapiclient.http import MediaIoBaseUpload
     except ImportError as exc:  # pragma: no cover — зависит от окружения

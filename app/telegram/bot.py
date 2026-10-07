@@ -21,7 +21,7 @@ from typing import Any
 from ..agent import agent as default_agent
 from ..config import settings
 from ..model_choice import current_model
-from ..integrations import accounts, google_client, google_oauth
+from ..integrations import google_sa, accounts, google_client, google_oauth
 from ..kb import intake, knowledge_base
 from ..sessions import store
 from .. import reminders, stt
@@ -328,7 +328,10 @@ class TelegramBot:
         elif command == "status":
             self._api.send_message(chat_id, self._status_text(), parse_mode="HTML")
         elif command == "auth":
-            self._handle_auth(chat_id)
+            if google_sa.enabled():
+                self._handle_sa_auth(chat_id, text)
+            else:
+                self._handle_auth(chat_id)
         elif command == "app":
             self._handle_app(chat_id)
         elif command == "check":
@@ -537,6 +540,43 @@ class TelegramBot:
         )
 
     # --- подключение Google ---
+
+    def _handle_sa_auth(self, chat_id: int, text: str) -> None:
+        """Google через сервисный аккаунт: «/auth почта» — и всё, без OAuth-экранов."""
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            current = google_sa.current_link()
+            prefix = (
+                f"Сейчас подключено: {google_sa.describe_link(current)}.\n"
+                "Чтобы сменить почту — /auth новая@почта.\n\n"
+                if current else ""
+            )
+            self._api.send_message(
+                chat_id,
+                escape(prefix + "Отправьте /auth и свою почту Google, например:\n/auth kirill@gmail.com\n\n"
+                       + google_sa.instructions()),
+            )
+            return
+        self._api.send_chat_action(chat_id, "typing")
+        try:
+            link = google_sa.connect(parts[1])
+        except google_sa.LinkError as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+        except Exception as exc:  # noqa: BLE001 — сеть или Google: сказать прямо
+            self._api.send_message(chat_id, "❌ Не удалось проверить доступ: " + escape(str(exc)[:300]))
+            return
+        google_client.reset_cache()
+        lines = ["✅ <b>Google подключён</b>", escape(google_sa.describe_link(link))]
+        if link.get("mode") == "shared":
+            lines.append(
+                "\nПриглашения участникам в этом режиме не рассылаются — участники пишутся в описание "
+                "встречи. Документы видны те, что открыты боту на Диске."
+            )
+            if link.get("access") == "reader":
+                lines.append("⚠️ Календарь открыт только на чтение — создавать встречи не получится. "
+                             "Поменяйте право на «Вносить изменения в мероприятия».")
+        self._api.send_message(chat_id, "\n".join(lines))
 
     def _handle_auth(self, chat_id: int) -> None:
         """Выдаёт ссылку авторизации и переводит чат в ожидание кода.
