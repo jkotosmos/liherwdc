@@ -15,6 +15,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Зависимости — отдельным слоем: пересобираются только при изменении requirements.
+# ffmpeg — перекодировать голосовые Telegram (OGG) для моделей, которые слышат только mp3/wav.
+# Не установился (нет доступа к репозиторию Debian) — сборку не роняем: голосовые
+# тогда распознаются только через Whisper-эндпоинт шлюза, без перекодирования.
+RUN (apt-get update \
+     && apt-get install -y --no-install-recommends ffmpeg \
+     && rm -rf /var/lib/apt/lists/*) \
+    || echo "ffmpeg не установлен — голосовые только через /audio/transcriptions"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

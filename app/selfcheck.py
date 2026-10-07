@@ -759,6 +759,26 @@ def check_quant() -> list[Check]:
     return checks
 
 
+def check_voice() -> list[Check]:
+    """Распознавание голосовых: пробуем на секунде тишины — без ffmpeg и без записи."""
+    from . import stt
+
+    if not stt.available():
+        return [Check("Распознавание голоса", SKIP, "нет ключа шлюза")]
+    stt.reset()
+    try:
+        _text, model = stt.transcribe(stt.silent_wav(), "check.wav", "audio/wav")
+    except stt.STTError as exc:
+        return [Check("Распознавание голоса", WARN, str(exc)[:400],
+                      ["Текст и документы работают. Голосовые заработают, когда шлюз примет модель распознавания."])]
+    import shutil
+
+    hints = [] if shutil.which("ffmpeg") or "whisper" in model or "transcribe" in model else [
+        "Для голосовых Telegram (OGG) этим способом нужен ffmpeg — в Docker-образе он есть."
+    ]
+    return [Check("Распознавание голоса", OK, f"работает ({model})", hints)]
+
+
 def _quant_match(quant: Any, info: Any, conf: Any, model: str) -> float | None:
     try:
         return quant.model_match(info, conf, model)
@@ -777,6 +797,7 @@ def run_groups() -> list[tuple[str, list[Check]]]:
         ("Интернет", check_search),
         ("База знаний", check_knowledge_base),
         ("Квант (Qdrant)", check_quant),
+        ("Голосовые", check_voice),
     ]
     results = []
     for title, runner in groups:

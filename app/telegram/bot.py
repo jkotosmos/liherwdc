@@ -24,7 +24,7 @@ from ..model_choice import current_model
 from ..integrations import accounts, google_client, google_oauth
 from ..kb import intake, knowledge_base
 from ..sessions import store
-from .. import reminders
+from .. import reminders, stt
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
 from ..tools import outbox
@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 GREETING = (
     "Деловой ассистент {org}.\n\n"
     "Отвечаю по базе знаний, Google Диску и календарю — со ссылкой на источник. "
-    "Ничего не создаю и не меняю без вашего подтверждения.\n\n"
+    "Ничего не создаю и не меняю без вашего подтверждения.\n"
+    "Можно писать, присылать голосовые и документы.\n\n"
     "Команды:\n"
     "/new — начать диалог заново\n"
     "/status — что подключено\n"
@@ -83,6 +84,9 @@ class ChatState:
             return False
         limit = settings.oauth_wait_minutes
         return limit > 0 and time.monotonic() - self.oauth_started_at > limit * 60
+
+
+MAX_VOICE_SECONDS = 600
 
 
 class TelegramBot:
@@ -217,21 +221,24 @@ class TelegramBot:
             self._handle_document(chat_id, message["document"], message.get("caption", ""))
             return
 
+        if not text and (message.get("voice") or message.get("audio")):
+            self._handle_voice(chat_id, message.get("voice") or message.get("audio"))
+            return
+
         if not text:
             kind = next(
-                (k for k in ("voice", "audio", "video", "photo", "sticker") if k in message),
+                (k for k in ("video", "video_note", "photo", "sticker") if k in message),
                 "",
             )
             hint = {
-                "voice": "Голосовые сообщения пока не распознаю.",
-                "audio": "Аудио пока не распознаю.",
-                "video": "Видео пока не распознаю.",
+                "video": "Видео пока не распознаю — пришлите голосовое или текст.",
+                "video_note": "Видеосообщения пока не распознаю — пришлите голосовое.",
                 "photo": "Картинки пока не читаю — пришлите документ файлом.",
-            }.get(kind, "Пока понимаю текст и документы.")
+            }.get(kind, "Понимаю текст, голосовые и документы.")
             self._api.send_message(
                 chat_id,
                 escape(
-                    f"{hint} Документы принимаю файлом: "
+                    f"{hint} Принимаю текст, голосовые и документы файлом: "
                     ".docx, .pdf, .xlsx, .pptx, .md, .csv, .json."
                 ),
             )
@@ -242,6 +249,37 @@ class TelegramBot:
             return
 
         self._handle_text(chat_id, text)
+
+    def _handle_voice(self, chat_id: int, voice: dict[str, Any]) -> None:
+        """Голосовое → текст через шлюз → обычная реплика.
+
+        Расшифровку показываем: человек видит, что бот услышал, и сразу
+        замечает ошибку распознавания в имени или сумме.
+        """
+        if (voice.get("duration") or 0) > MAX_VOICE_SECONDS:
+            self._api.send_message(
+                chat_id, f"Голосовое длиннее {MAX_VOICE_SECONDS // 60} мин — разбейте на части."
+            )
+            return
+        if (voice.get("file_size") or 0) > 20 * 1024 * 1024:
+            self._api.send_message(chat_id, "Файл больше 20 МБ — Telegram не даёт боту его скачать.")
+            return
+        self._api.send_chat_action(chat_id, "typing")
+        try:
+            meta = self._api.get_file(voice["file_id"])
+            data = self._api.download_file(meta["file_path"])
+            mime = voice.get("mime_type") or "audio/ogg"
+            name = voice.get("file_name") or ("voice.ogg" if "ogg" in mime else "audio")
+            text, _model = stt.transcribe(data, name, mime)
+        except (TelegramError, stt.STTError) as exc:
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+            return
+        if not text:
+            self._api.send_message(chat_id, "Не расслышал речи в голосовом — повторите, пожалуйста.")
+            return
+        self._api.send_message(chat_id, f"🎤 <i>{escape(text)}</i>")
+        # Как нажатие кнопки: голосовое не может быть кодом авторизации Google.
+        self._handle_text(chat_id, text, from_menu=True)
 
     def _handle_text(self, chat_id: int, text: str, from_menu: bool = False) -> None:
         """Реплика пользователя — набранная или отправленная кнопкой меню."""

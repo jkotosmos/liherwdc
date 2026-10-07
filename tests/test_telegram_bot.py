@@ -265,15 +265,72 @@ class TestCommands:
         bot._handle_update(message("/чтото"))
         assert "Неизвестная команда" in api.texts()[0]
 
-    def test_voice_message_says_what_is_accepted(self, monkeypatch) -> None:
+    def test_photo_message_says_what_is_accepted(self, monkeypatch) -> None:
         """Отказ должен называть, что бот принимает, а не только чего не умеет."""
         bot, api = self._bot(monkeypatch)
         bot._handle_update({"update_id": 1,
                             "message": {"chat": {"id": 1}, "from": {"id": ALLOWED},
-                                        "voice": {"file_id": "x"}}})
+                                        "photo": [{"file_id": "x"}]}})
         text = api.texts()[0]
-        assert "Голосовые" in text
-        assert ".docx" in text and ".pdf" in text
+        assert "голосовые" in text and ".docx" in text and ".pdf" in text
+
+
+class TestVoice:
+    """Голосовое → расшифровка через шлюз → обычная реплика ассистенту."""
+
+    def _bot(self, monkeypatch, transcribe):
+        heard = []
+
+        class Agent(FakeAgent):
+            def send_user_message(self, session, text):
+                heard.append(text)
+                yield from super().send_user_message(session, text)
+
+        bot, api = make_bot(Agent([{"type": "text", "text": "Ответ"}, {"type": "done"}]), monkeypatch)
+        api.get_file = lambda file_id: {"file_path": "voice/file_1.oga"}
+        api.download_file = lambda path: b"OggS-fake"
+        monkeypatch.setattr(bot_module.stt, "transcribe", transcribe)
+        return bot, api, heard
+
+    @staticmethod
+    def _voice(**extra):
+        return {"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": ALLOWED},
+                                            "voice": {"file_id": "v1", "duration": 6, "mime_type": "audio/ogg", **extra}}}
+
+    def test_voice_is_transcribed_shown_and_answered(self, monkeypatch) -> None:
+        seen = {}
+
+        def transcribe(data, name, mime):
+            seen.update(data=data, name=name, mime=mime)
+            return "Какие встречи завтра?", "openai/whisper-1"
+
+        bot, api, heard = self._bot(monkeypatch, transcribe)
+        bot._handle_update(self._voice())
+        assert seen == {"data": b"OggS-fake", "name": "voice.ogg", "mime": "audio/ogg"}
+        assert "🎤" in api.texts()[0] and "Какие встречи завтра?" in api.texts()[0]
+        assert heard == ["Какие встречи завтра?"]
+
+    def test_recognition_failure_is_explained(self, monkeypatch) -> None:
+        def transcribe(data, name, mime):
+            raise bot_module.stt.STTError("Не удалось распознать голосовое: шлюз не принял ни один способ.")
+
+        bot, api, heard = self._bot(monkeypatch, transcribe)
+        bot._handle_update(self._voice())
+        assert "Не удалось распознать" in api.texts()[-1] and heard == []
+
+    def test_too_long_voice_is_refused_before_download(self, monkeypatch) -> None:
+        bot, api, heard = self._bot(monkeypatch, lambda *a: pytest.fail("скачивать не нужно"))
+        bot._handle_update(self._voice(duration=3600))
+        assert "длиннее" in api.texts()[-1] and heard == []
+
+    def test_voice_does_not_count_as_google_code(self, monkeypatch) -> None:
+        bot, api, heard = self._bot(monkeypatch, lambda *a: ("4/0Axyz_abcdefghijkl", "m"))
+        monkeypatch.setattr(bot_module.google_oauth, "start", lambda label="": ("https://auth", "st1"))
+        monkeypatch.setattr(bot_module.google_oauth, "exchange_code",
+                            lambda *a, **k: pytest.fail("голосовое — не код авторизации"))
+        bot._handle_update(message("/auth"))
+        bot._handle_update(self._voice())
+        assert heard == ["4/0Axyz_abcdefghijkl"]
 
 
 class TestFormatting:
