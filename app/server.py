@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, model_choice, routerai
 from .agent import agent
-from .config import BASE_DIR, settings
+from .config import env_source, BASE_DIR, settings
 from .integrations import accounts, google_client, google_oauth
 from .kb import knowledge_base
 from .sessions import store
@@ -526,5 +526,8 @@ def _startup_report() -> None:
     )
     if settings.telegram_enabled:
         logger.info(
-            "Telegram: белый список из %s пользователей", len(settings.telegram_allowed_users)
+            "Telegram: белый список из %s пользователей %s (%s)",
+            len(settings.telegram_allowed_users),
+            sorted(settings.telegram_allowed_users),
+            env_source("TELEGRAM_ALLOWED_USERS"),
         )

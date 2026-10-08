@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import timezone, tzinfo
@@ -46,7 +47,52 @@ def _load_env_files() -> list[Path]:
     return loaded
 
 
+# Что задано в окружении (панель Amvera) ДО чтения .env-файлов — чтобы
+# самопроверка могла сказать, откуда взялось значение.
+_ENV_BEFORE_FILES = frozenset(os.environ)
 ENV_FILES_LOADED = _load_env_files()
+
+
+def env_source(name: str) -> str:
+    """Откуда взята переменная: панель (окружение) или конкретный .env-файл."""
+    if name in _ENV_BEFORE_FILES:
+        return "переменные окружения (панель Amvera)"
+    for path in ENV_FILES_LOADED:
+        try:
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                if line.strip().startswith(name + "="):
+                    return f"файл {path}"
+        except OSError:
+            continue
+    return "не задано"
+
+
+def parse_telegram_ids(raw: str) -> tuple[frozenset[int], list[str]]:
+    """ID через запятую, точку с запятой, пробел или перенос строки.
+
+    Возвращает (ID, отброшенные куски) — отброшенное показывает /check, чтобы
+    опечатка в списке не превращалась в «бот молча не отвечает».
+    """
+    ids: set[int] = set()
+    rejected: list[str] = []
+    for chunk in re.split(r"[,;\n]+", raw or ""):
+        chunk = chunk.strip().strip("\"'").strip()
+        if not chunk:
+            continue
+        pieces = chunk.split()
+        # «198704816 159893732» — два ID через пробел; «159 893 732» — один,
+        # набранный с пробелами. Различаем по длине кусков: ID короче 6 цифр нет.
+        if len(pieces) > 1 and all(p.lstrip("-").isdigit() and len(p.lstrip("-")) >= 6 for p in pieces):
+            candidates = pieces
+        else:
+            candidates = ["".join(pieces)]
+        for part in candidates:
+            if part.lstrip("-").isdigit():
+                ids.add(int(part))
+            else:
+                rejected.append(chunk)
+                break
+    return frozenset(ids), rejected
 
 # Провайдеры доступа к модели. Anthropic-совместимый протокол поддерживают оба,
 # поэтому код агента одинаков — различаются адрес, ключ и набор возможностей.
@@ -299,13 +345,7 @@ class Settings:
         Бот работает с Google-аккаунтом владельца, поэтому любое сообщение
         не из этого списка игнорируется молча — без списка бот не стартует.
         """
-        raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
-        ids = set()
-        for part in raw.replace(";", ",").split(","):
-            part = part.strip()
-            if part.lstrip("-").isdigit():
-                ids.add(int(part))
-        return frozenset(ids)
+        return parse_telegram_ids(os.getenv("TELEGRAM_ALLOWED_USERS", ""))[0]
 
     @property
     def telegram_enabled(self) -> bool:

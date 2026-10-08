@@ -15,6 +15,8 @@ Google, интернет-поиск и база знаний.
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -265,11 +267,25 @@ def check_telegram() -> list[Check]:
             )
         ]
 
+    from .config import env_source, parse_telegram_ids
+
     allowed = settings.telegram_allowed_users
+    _ids, rejected = parse_telegram_ids(os.getenv("TELEGRAM_ALLOWED_USERS", ""))
     if allowed:
-        checks.append(
-            Check("Telegram: белый список", OK, f"{len(allowed)} чел.: {sorted(allowed)}")
-        )
+        source = env_source("TELEGRAM_ALLOWED_USERS")
+        hints = [f"Взято из: {source}."]
+        if source.startswith("файл"):
+            hints.append(
+                "В панели Amvera переменной TELEGRAM_ALLOWED_USERS нет — правка в панели не "
+                "дойдёт, пока её там не создать (панель сильнее файла)."
+            )
+        checks.append(Check("Telegram: белый список", OK, f"{len(allowed)} чел.: {sorted(allowed)}", hints))
+        if rejected:
+            checks.append(Check(
+                "Telegram: белый список", WARN,
+                "пропущено, не похоже на ID: " + ", ".join(f"«{r}»" for r in rejected[:5]),
+                ["ID — только цифры, через запятую. Узнать ID — @userinfobot."],
+            ))
     else:
         checks.append(
             Check(
