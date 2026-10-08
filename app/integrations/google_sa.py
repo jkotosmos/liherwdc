@@ -53,9 +53,36 @@ class LinkError(Exception):
 # --- ключ ----------------------------------------------------------------------
 
 
-def _key_path() -> Path:
+def _key_path() -> Path | None:
+    """Где лежит ключ. Скачанный из Google файл можно положить в /data как есть,
+    не переименовывая: ищем любой JSON с type=service_account."""
     explicit = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE") or "").strip()
-    return Path(explicit) if explicit else settings.credentials_dir / "service_account.json"
+    if explicit:
+        return Path(explicit)
+    named = settings.credentials_dir / "service_account.json"
+    if named.is_file():
+        return named
+    from ..config import PERSIST_DIR
+
+    for folder in (settings.credentials_dir, PERSIST_DIR):
+        try:
+            candidates = sorted(folder.glob("*.json"))
+        except OSError:
+            continue
+        for path in candidates:
+            if _read_key(path) is not None:
+                return path
+    return None
+
+
+def _read_key(path: Path) -> dict[str, Any] | None:
+    try:
+        if path.stat().st_size > 20_000:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("type") == "service_account" else None
 
 
 def info() -> dict[str, Any] | None:
@@ -73,13 +100,7 @@ def info() -> dict[str, Any] | None:
             return None
         return data if isinstance(data, dict) and data.get("type") == "service_account" else None
     path = _key_path()
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        return data if isinstance(data, dict) and data.get("type") == "service_account" else None
-    return None
+    return _read_key(path) if path is not None and path.is_file() else None
 
 
 def enabled() -> bool:

@@ -242,3 +242,17 @@ def test_selfcheck_in_service_account_mode(sa, monkeypatch) -> None:
         checks = selfcheck.check_google()
     assert checks[0].status == selfcheck.OK and "operon-bot@" in checks[0].detail
     assert checks[1].status == selfcheck.WARN and "/auth" in checks[1].hints[0]
+
+
+def test_downloaded_key_found_in_data_root_without_renaming(sa, monkeypatch, tmp_path) -> None:
+    """Файл из Google называется operon-123456-ab12cd.json — переименовывать не нужно."""
+    from app import config
+
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / ".env").write_text("X=1")
+    (root / "other.json").write_text('{"type": "authorized_user"}')
+    (root / "operon-123456-ab12cd34ef56.json").write_text(json.dumps(KEY))
+    monkeypatch.setattr(config, "PERSIST_DIR", root)
+    assert google_sa.enabled() and google_sa.email() == KEY["client_email"]
