@@ -41,3 +41,11 @@ def _reset_paid_search_pause():
     web._paid_paused_until.clear()
     yield
     web._paid_paused_until.clear()
+
+
+@pytest.fixture(autouse=True)
+def _google_preflight_ok(monkeypatch):
+    """Тесты не ходят в Google проверять ссылку входа; проверку тестируют отдельно."""
+    from app.integrations import google_oauth
+
+    monkeypatch.setattr(google_oauth, "preflight", lambda: (True, ""))

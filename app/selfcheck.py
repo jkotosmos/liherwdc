@@ -314,12 +314,21 @@ def check_telegram() -> list[Check]:
 def check_google() -> list[Check]:
     from .integrations import google_client, google_oauth, google_sa
 
-    if google_sa.problem():
-        return [Check("Google: сервисный аккаунт", FAIL, google_sa.problem())]
-    if google_sa.enabled():
-        return _check_google_service_account()
+    from .integrations import token_store
 
-    checks: list[Check] = []
+    prefix: list[Check] = []
+    if google_oauth.configured():
+        ok, problem = google_oauth.preflight()
+        prefix.append(Check(
+            "Google: вход через Google", OK if ok else FAIL,
+            "Google примет вход — кнопка «Войти через Google» в /auth" if ok else problem,
+        ))
+    if google_sa.problem():
+        return prefix + [Check("Google: сервисный аккаунт", FAIL, google_sa.problem())]
+    if google_sa.enabled() and not token_store.token_exists():
+        return prefix + _check_google_service_account()
+
+    checks: list[Check] = list(prefix)
     client = google_oauth.describe_client()
 
     if client["configured"]:

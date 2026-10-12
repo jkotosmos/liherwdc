@@ -331,10 +331,13 @@ class TelegramBot:
         elif command == "status":
             self._api.send_message(chat_id, self._status_text(), parse_mode="HTML")
         elif command == "auth":
-            if google_sa.enabled():
-                self._handle_sa_auth(chat_id, text)
+            argument = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+            if argument and "@" in argument and google_sa.enabled():
+                self._handle_sa_auth(chat_id, text)  # «/auth почта» — общий доступ через сервисный аккаунт
+            elif google_oauth.configured() or not google_sa.enabled():
+                self._handle_auth(chat_id)  # вход через Google — основной способ
             else:
-                self._handle_auth(chat_id)
+                self._handle_sa_auth(chat_id, text)
         elif command == "app":
             self._handle_app(chat_id)
         elif command in {"adduser", "removeuser", "users"}:
@@ -644,6 +647,20 @@ class TelegramBot:
             )
             return
 
+        # Проверяем ссылку у Google до того, как отдать её человеку: ссылка,
+        # которая закончится «Доступ заблокирован», хуже, чем никакой.
+        ok, problem = google_oauth.preflight()
+        if not ok:
+            logger.warning("Вход через Google не пройдёт: %s", problem)
+            text = "❌ Вход через Google сейчас не сработает — это настройка Google Cloud, а не ваша ошибка.\n\n" + problem
+            if google_sa.enabled():
+                text += (
+                    "\n\nПока можно подключить без входа — открыть свой календарь боту:\n"
+                    + google_sa.instructions()
+                )
+            self._api.send_message(chat_id, escape(text))
+            return
+
         try:
             url, oauth_state = google_oauth.start(label=f"telegram:{chat_id}")
         except google_oauth.OAuthError as exc:
@@ -664,6 +681,7 @@ class TelegramBot:
             f"{prefix}<b>Подключение Google</b>\n\n"
             f'<a href="{escape(url)}">Открыть страницу доступа</a>\n\n'
             + escape(google_oauth.instructions()),
+            reply_markup={"inline_keyboard": [[{"text": "🔐 Войти через Google", "url": url}]]},
         )
 
     def _handle_oauth_code(self, chat_id: int, state: ChatState, text: str) -> None:

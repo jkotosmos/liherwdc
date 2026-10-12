@@ -61,7 +61,8 @@ def _load_credentials() -> Any:
             f"({GOOGLE_IMPORT_ERROR}). Установите зависимости: pip install -r requirements.txt"
         )
 
-    if google_sa.enabled():
+    # Свой вход человека (OAuth) важнее общего доступа через сервисный аккаунт.
+    if google_sa.enabled() and not token_store.token_exists():
         return _service_account_credentials(key)
 
     with _lock:
@@ -125,18 +126,19 @@ def _service_account_credentials(key: str) -> Any:
 
 def mode() -> str:
     """oauth — свой токен; delegated / shared — сервисный аккаунт; пусто — не подключено."""
+    if token_store.token_exists():
+        return "oauth"
     if google_sa.enabled():
         link = google_sa.current_link()
         return str(link.get("mode")) if link else ""
-    return "oauth" if token_store.token_exists() else ""
+    return ""
 
 
 def default_calendar() -> str:
     """Чей календарь по умолчанию. У сервисного аккаунта «primary» — его собственный, пустой."""
-    if google_sa.enabled():
-        link = google_sa.current_link()
-        if link and link.get("mode") == "shared":
-            return link["email"]
+    if mode() == "shared":
+        link = google_sa.current_link() or {}
+        return link.get("email") or "primary"
     return "primary"
 
 
@@ -245,7 +247,7 @@ def status() -> dict[str, Any]:
             "reason": "Библиотеки Google API не установлены",
             "hint": "pip install -r requirements.txt",
         }
-    if google_sa.enabled():
+    if google_sa.enabled() and not token_store.token_exists():
         link = google_sa.current_link()
         if link is None:
             return {"connected": False, "reason": "почта Google не подключена (сервисный аккаунт)",

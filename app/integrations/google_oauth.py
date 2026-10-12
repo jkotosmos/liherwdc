@@ -28,6 +28,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -79,6 +80,78 @@ def _forget_stale() -> None:
             _pending.pop(state, None)
 
 
+def _read_client_file(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.is_file() or path.stat().st_size > 20_000:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    section = data.get("web") or data.get("installed")
+    if isinstance(section, dict) and section.get("client_id") and section.get("client_secret"):
+        return data
+    return None
+
+
+def client_file() -> tuple[Path, dict[str, Any]] | None:
+    """Скачанный из Google файл OAuth-клиента (client_secret_….json).
+
+    Достаточно положить его в /data как есть: в нём ID, секрет, тип клиента и
+    разрешённые адреса возврата — переменные в панели хостинга не нужны.
+    Файл сильнее переменных: загрузить новый файл — осознанное действие, а
+    устаревшая переменная в панели могла остаться от прошлых попыток.
+    """
+    explicit = (os.getenv("OPERON_GOOGLE_CLIENT_SECRET") or "").strip()
+    if explicit:
+        data = _read_client_file(Path(explicit))
+        return (Path(explicit), data) if data else None
+    from ..config import PERSIST_DIR
+
+    candidates = [settings.credentials_dir / "client_secret.json"]
+    for folder in (settings.credentials_dir, PERSIST_DIR):
+        try:
+            candidates += sorted(folder.glob("*.json"))
+        except OSError:
+            continue
+    for path in candidates:
+        data = _read_client_file(path)
+        if data:
+            return path, data
+    return None
+
+
+def redirect_uri() -> str:
+    """Куда Google вернёт код — из файла клиента, если он есть, иначе из настроек."""
+    explicit = (os.getenv("OPERON_OAUTH_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    found = client_file()
+    if found is None:
+        return settings.oauth_redirect_uri
+    data = found[1]
+    if "installed" in data:
+        return "http://localhost:8765/"
+    uris = [str(u) for u in (data["web"].get("redirect_uris") or [])]
+    for uri in uris:
+        if uri.rstrip("/").endswith(settings.oauth_callback_path):
+            return uri
+    for uri in uris:
+        if uri.startswith(("http://localhost", "http://127.0.0.1")):
+            return uri
+    # Подходящего адреса в клиенте нет — возвращаем нужный нам; _client_config
+    # скажет, какой именно адрес добавить в Google Cloud.
+    if settings.public_url:
+        return settings.public_url + settings.oauth_callback_path
+    return settings.oauth_redirect_uri
+
+
+def callback_enabled() -> bool:
+    """Код придёт на сервер сам (Web-клиент с адресом сервера) — копировать ничего не нужно."""
+    return redirect_uri().rstrip("/").endswith(settings.oauth_callback_path)
+
+
 def _config_from_env() -> dict[str, Any] | None:
     """Собирает конфигурацию клиента из GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
 
@@ -91,7 +164,7 @@ def _config_from_env() -> dict[str, Any] | None:
     if not client_id or not client_secret:
         return None
 
-    section = "web" if settings.oauth_callback_enabled else "installed"
+    section = "web" if callback_enabled() else "installed"
     return {
         section: {
             "client_id": client_id,
@@ -99,50 +172,36 @@ def _config_from_env() -> dict[str, Any] | None:
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "redirect_uris": [settings.oauth_redirect_uri],
+            "redirect_uris": [redirect_uri()],
         }
     }
 
 
 def _client_config() -> dict[str, Any]:
+    found = client_file()
+    if found is not None:
+        config = found[1]
+        if "web" in config and "installed" not in config:
+            # Для Web-клиента адрес возврата должен быть прописан в Google Cloud.
+            # Список из скачанного файла проверяем сами; Google проверит по-настоящему.
+            registered = config["web"].get("redirect_uris") or []
+            wanted = redirect_uri()
+            if wanted not in registered:
+                raise OAuthError(
+                    "OAuth-клиент имеет тип «Web application», а его список Authorized "
+                    f"redirect URIs не содержит {wanted}. Добавьте этот адрес в Google Cloud "
+                    "(Google Auth Platform → Clients → ваш клиент → Authorized redirect URIs), "
+                    "скачайте JSON клиента заново и замените файл на сервере."
+                )
+        return config
     from_env = _config_from_env()
     if from_env is not None:
         return from_env
-
-    path = settings.google_client_secret_path
-    if not path.exists():
-        raise OAuthError(
-            "OAuth-клиент Google не настроен. Есть два способа:\n\n"
-            "1) переменные окружения GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET "
-            "(проще всего на сервере);\n"
-            f"2) файл {path}.\n\n"
-            "Где взять: console.cloud.google.com → APIs & Services → Credentials → "
-            "Create credentials → OAuth client ID."
-        )
-    try:
-        config = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise OAuthError(f"Файл OAuth-клиента нечитаем ({exc}). Скачайте его заново.") from exc
-
-    if "installed" not in config and "web" not in config:
-        raise OAuthError(
-            "В файле нет ни секции «installed», ни «web» — это не файл OAuth-клиента. "
-            "Скачайте JSON именно из раздела Credentials → OAuth 2.0 Client IDs."
-        )
-    if "web" in config and "installed" not in config:
-        # Для клиента типа Web адрес возврата должен быть заранее прописан в
-        # консоли. Список из скачанного файла — единственное, что можно
-        # проверить локально; Google проверит по-настоящему.
-        registered = config["web"].get("redirect_uris") or []
-        if registered and settings.oauth_redirect_uri not in registered:
-            raise OAuthError(
-                "OAuth-клиент имеет тип «Web application», а его список Authorized "
-                f"redirect URIs не содержит {settings.oauth_redirect_uri}. Добавьте "
-                "этот адрес в Google Cloud Console (Credentials → ваш клиент → "
-                "Authorized redirect URIs) либо задайте OPERON_OAUTH_REDIRECT_URI "
-                "равным одному из уже разрешённых."
-            )
-    return config
+    raise OAuthError(
+        "OAuth-клиент Google не настроен. Проще всего: скачайте JSON клиента из Google Cloud "
+        "(Google Auth Platform → Clients → ⬇) и положите файл в /data на сервере как есть. "
+        "Или задайте переменные GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET."
+    )
 
 
 def _flow() -> Any:
@@ -162,7 +221,7 @@ def _flow() -> Any:
         return Flow.from_client_config(
             _client_config(),
             scopes=list(settings.google_scopes),
-            redirect_uri=settings.oauth_redirect_uri,
+            redirect_uri=redirect_uri(),
         )
     except ValueError as exc:
         raise OAuthError(f"Файл OAuth-клиента не подходит для авторизации: {exc}") from exc
@@ -371,7 +430,7 @@ def _describe_exchange_error(exc: Exception) -> str:
     if "redirect_uri_mismatch" in lowered:
         return (
             "Google отклонил адрес возврата (redirect_uri_mismatch). Ожидался "
-            f"{settings.oauth_redirect_uri}. Убедитесь, что OAuth-клиент имеет тип "
+            f"{redirect_uri()}. Убедитесь, что OAuth-клиент имеет тип "
             "«Desktop app», либо задайте OPERON_OAUTH_REDIRECT_URI под свой клиент."
         )
     if "invalid_client" in lowered:
@@ -412,13 +471,13 @@ def _client_line() -> str:
     short = client_id.split(".apps.googleusercontent.com")[0]
     return (
         f"\n\nДля сверки в Google Cloud: клиент {short}, "
-        f"адрес возврата {settings.oauth_redirect_uri}"
+        f"адрес возврата {redirect_uri()}"
     )
 
 
 def instructions() -> str:
     """Текст, который бот показывает вместе со ссылкой (без разметки)."""
-    if settings.oauth_callback_enabled:
+    if callback_enabled():
         return (
             "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
             "с документами которой должен работать ассистент.\n"
@@ -432,7 +491,7 @@ def instructions() -> str:
         "1. Откройте ссылку и разрешите доступ — под той учётной записью, "
         "с документами которой должен работать ассистент.\n"
         "2. Браузер попытается открыть "
-        f"{settings.oauth_redirect_uri} и покажет ошибку соединения. Это нормально: "
+        f"{redirect_uri()} и покажет ошибку соединения. Это нормально: "
         "слушать этот адрес некому.\n"
         "3. Скопируйте адрес из строки браузера целиком и пришлите его сюда "
         "следующим сообщением.\n\n"
@@ -445,13 +504,96 @@ def instructions() -> str:
 def describe_client() -> dict[str, Any]:
     """Как настроен OAuth-клиент — для /status и диагностики."""
     source = ""
-    if _config_from_env() is not None:
+    found = client_file()
+    if found is not None:
+        kind = "Web" if "web" in found[1] else "Desktop"
+        source = f"файл {found[0].name} (клиент {kind})"
+    elif _config_from_env() is not None:
         source = "переменные окружения"
-    elif settings.google_client_secret_path.exists():
-        source = f"файл {settings.google_client_secret_path.name}"
     return {
         "configured": bool(source),
         "source": source or "не настроен",
-        "redirect_uri": settings.oauth_redirect_uri,
-        "callback_mode": settings.oauth_callback_enabled,
+        "redirect_uri": redirect_uri(),
+        "callback_mode": callback_enabled(),
     }
+
+
+# --- проверка до клика ---------------------------------------------------------
+
+# Что Google отвечает на ссылку входа, видно без входа в аккаунт: неверный
+# адрес возврата или клиент — перенаправление на страницу ошибки с кодом
+# внутри. Проверяем ссылку сами, чтобы пользователь никогда не получал ссылку,
+# которая закончится «Доступ заблокирован».
+PREFLIGHT_HINTS = {
+    "redirect_uri_mismatch": (
+        "Google не принимает адрес возврата {redirect} для клиента {client}. "
+        "Google Cloud → Google Auth Platform → Clients → этот клиент → Authorized redirect URIs → "
+        "добавьте {redirect} точно как написано, Save, подождите 5 минут."
+    ),
+    "invalid_client": (
+        "Google не знает клиента {client}: в GOOGLE_CLIENT_ID опечатка или клиент удалён. "
+        "Скопируйте Client ID заново из Google Cloud → Google Auth Platform → Clients."
+    ),
+    "deleted_client": "Клиент {client} удалён в Google Cloud — создайте новый и обновите GOOGLE_CLIENT_ID / SECRET.",
+    "disabled_client": "Клиент {client} отключён в Google Cloud — включите его или создайте новый.",
+}
+
+
+def _decode_auth_error(location: str) -> str:
+    """Код ошибки из адреса страницы ошибки Google (authError — base64 protobuf)."""
+    import base64
+
+    query = parse_qs(urlparse(location).query)
+    raw = (query.get("authError") or [""])[0]
+    if not raw:
+        return "unknown_error"
+    try:
+        data = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    except (ValueError, TypeError):
+        return "unknown_error"
+    # Поле 1 — строка с кодом: 0x0A, длина, байты.
+    if len(data) > 2 and data[0] == 0x0A and data[1] < len(data):
+        return data[2:2 + data[1]].decode("utf-8", "replace")
+    return "unknown_error"
+
+
+def preflight() -> tuple[bool, str]:
+    """(True, "") — Google покажет вход; (False, объяснение) — ссылка закончится ошибкой.
+
+    Сеть недоступна — (True, ""): не мешаем входу из-за проверки.
+    """
+    import httpx
+
+    from ..net import http_options
+
+    try:
+        config = _client_config()
+    except OAuthError as exc:
+        return False, str(exc)
+    section = config.get("installed") or config.get("web") or {}
+    client_id = str(section.get("client_id", ""))
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri(),
+        "response_type": "code",
+        "scope": " ".join(settings.google_scopes),
+        "access_type": "offline",
+    }
+    try:
+        response = httpx.get(
+            "https://accounts.google.com/o/oauth2/v2/auth", params=params,
+            follow_redirects=False, timeout=15, **http_options(),
+        )
+    except httpx.HTTPError:
+        return True, ""
+    location = response.headers.get("location", "")
+    if "/signin/oauth/error" not in location:
+        return True, ""
+    code = _decode_auth_error(location)
+    short = client_id.split(".apps.googleusercontent.com")[0]
+    template = PREFLIGHT_HINTS.get(code, "Google отклоняет вход: {code}. Клиент {client}, адрес возврата {redirect}.")
+    return False, template.format(code=code, client=short, redirect=redirect_uri())
+
+
+def configured() -> bool:
+    return describe_client()["configured"]
