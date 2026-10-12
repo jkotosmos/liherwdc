@@ -279,7 +279,13 @@ def check_telegram() -> list[Check]:
                 "В панели Amvera переменной TELEGRAM_ALLOWED_USERS нет — правка в панели не "
                 "дойдёт, пока её там не создать (панель сильнее файла)."
             )
-        checks.append(Check("Telegram: белый список", OK, f"{len(allowed)} чел.: {sorted(allowed)}", hints))
+        from .telegram import access
+
+        added = sorted(access.extra())
+        detail = f"{len(allowed)} чел.: {sorted(allowed)}"
+        if added:
+            detail += f" + добавлены командой /adduser: {added}"
+        checks.append(Check("Telegram: белый список", OK, detail, hints))
         if rejected:
             checks.append(Check(
                 "Telegram: белый список", WARN,

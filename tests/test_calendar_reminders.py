@@ -84,8 +84,10 @@ class TestPersonalReminders:
     def test_delivered_on_time_once_even_at_night(self, state) -> None:
         call("reminder_create", {"text": "Выпить <таблетку>", "at": future(5)}, KIRILL)
         due_at = datetime.now(settings.tz) + timedelta(minutes=6)
-        night = due_at.replace(hour=23)
-        if night < due_at:
+        # Ночь (тихие часы) и заметно позже срока — от текущего часа не зависит.
+        late = due_at + timedelta(minutes=20)
+        night = late.replace(hour=23, minute=30, second=0, microsecond=0)
+        if night < late:
             night += timedelta(days=1)
 
         assert [r for r in reminders.pending(datetime.now(settings.tz), KIRILL) if r.kind == "personal"] == []

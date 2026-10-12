@@ -64,7 +64,9 @@ def validate(init_data: str, token: str | None = None, now: float | None = None)
     except ValueError as exc:
         raise InitDataError("Telegram не передал пользователя.") from exc
     user_id = user.get("id")
-    if not isinstance(user_id, int) or user_id not in settings.telegram_allowed_users:
+    from .access import allowed
+
+    if not isinstance(user_id, int) or user_id not in allowed():
         raise InitDataError("Доступ закрыт: вас нет в списке TELEGRAM_ALLOWED_USERS.")
     return user
 

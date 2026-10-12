@@ -25,6 +25,7 @@ from ..integrations import google_sa, accounts, google_client, google_oauth
 from ..kb import intake, knowledge_base
 from ..sessions import store
 from .. import reminders, stt
+from . import access
 from .api import TelegramAPI, TelegramError
 from .format import escape, split_message, to_telegram_html
 from ..tools import outbox
@@ -45,6 +46,7 @@ GREETING = (
     "/menu — меню по разделам\n"
     "/app — приложение: выбор модели, баланс, чат\n"
     "/check — проверить всё: модель, баланс, Google, поиск\n"
+    "/users — кто имеет доступ (владельцам: /adduser ID)\n"
     "/help — подсказка"
 )
 
@@ -187,7 +189,7 @@ class TelegramBot:
         source = update.get("message") or update.get("callback_query") or {}
         user = source.get("from") or {}
         user_id = user.get("id")
-        if user_id in self._allowed:
+        if user_id in self._allowed or user_id in access.extra():
             return user_id
         # WARNING, а не INFO: «бот молчит» чаще всего значит, что ID в белом
         # списке записан не тот, — эта строка в журнале называет настоящий.
@@ -205,6 +207,7 @@ class TelegramBot:
         # Всё, что бот делает по этому сообщению, — от имени этого человека:
         # его Google, его /auth, его /check (integrations/accounts.py).
         self._ensure_menu(user_id)
+        self._current_user = user_id
         with accounts.use(user_id):
             if "callback_query" in update:
                 self._handle_callback(update["callback_query"])
@@ -334,6 +337,8 @@ class TelegramBot:
                 self._handle_auth(chat_id)
         elif command == "app":
             self._handle_app(chat_id)
+        elif command in {"adduser", "removeuser", "users"}:
+            self._handle_users(chat_id, command, text)
         elif command == "check":
             self._handle_check(chat_id)
         elif command == "routerai":
@@ -344,7 +349,7 @@ class TelegramBot:
                 self._api.send_message(chat_id, f"<pre>{escape(part)}</pre>", parse_mode="HTML")
         else:
             self._api.send_message(
-                chat_id, "Неизвестная команда. Есть /menu, /new, /status, /auth, /app, /check, /help."
+                chat_id, "Неизвестная команда. Есть /menu, /new, /status, /auth, /app, /check, /users, /help."
             )
 
     # --- Mini App ---
@@ -540,6 +545,54 @@ class TelegramBot:
         )
 
     # --- подключение Google ---
+
+    def _handle_users(self, chat_id: int, command: str, text: str) -> None:
+        """Доступ к боту из чата: /users, /adduser ID, /removeuser ID.
+
+        Управляют только люди из TELEGRAM_ALLOWED_USERS — добавленный командой
+        раздавать доступ дальше не может.
+        """
+        user_id = getattr(self, "_current_user", None)
+        if user_id not in self._allowed:
+            self._api.send_message(chat_id, "Управлять доступом могут только владельцы бота.")
+            return
+        added = access.extra()
+        if command == "users":
+            lines = ["<b>Доступ к боту</b>", "Владельцы (из настроек Amvera):"]
+            lines += [f"• <code>{uid}</code>" for uid in sorted(self._allowed)]
+            lines.append("Добавлены командой:" if added else "Добавленных командой нет.")
+            lines += [f"• <code>{uid}</code>" for uid in sorted(added)]
+            lines.append("\nДобавить: /adduser ID · убрать: /removeuser ID")
+            self._api.send_message(chat_id, "\n".join(lines))
+            return
+        parts = text.split()
+        if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+            self._api.send_message(
+                chat_id, f"Укажите Telegram ID цифрами: /{command} 159893732\n"
+                "Свой ID человек узнаёт у @userinfobot."
+            )
+            return
+        target = int(parts[1])
+        if command == "adduser":
+            if access.add(target, user_id):
+                logger.warning("Пользователь %s добавлен в бот пользователем %s", target, user_id)
+                self._api.send_message(
+                    chat_id, f"✅ <code>{target}</code> добавлен. Пусть откроет бота и нажмёт «Старт»."
+                )
+            else:
+                self._api.send_message(chat_id, f"<code>{target}</code> уже есть в списке.")
+            return
+        if target in self._allowed:
+            self._api.send_message(
+                chat_id, "Это владелец из настроек Amvera — убрать его можно только там "
+                "(TELEGRAM_ALLOWED_USERS)."
+            )
+        elif access.remove(target):
+            logger.warning("Пользователь %s удалён из бота пользователем %s", target, user_id)
+            self._menu_ready.discard(target)
+            self._api.send_message(chat_id, f"Доступ для <code>{target}</code> закрыт.")
+        else:
+            self._api.send_message(chat_id, f"<code>{target}</code> в списке не было.")
 
     def _handle_sa_auth(self, chat_id: int, text: str) -> None:
         """Google через сервисный аккаунт: «/auth почта» — и всё, без OAuth-экранов."""
@@ -924,7 +977,7 @@ class TelegramBot:
         """
         # Сводка у каждого своя: поручения общие, а встречи дня — из его
         # собственного календаря. Общая сводка разослала бы всем встречи владельца.
-        for user_id in sorted(self._allowed):
+        for user_id in sorted(self._allowed | frozenset(access.extra())):
             with accounts.use(user_id):
                 plan = reminders.pending(account=str(user_id))
                 if not plan:
