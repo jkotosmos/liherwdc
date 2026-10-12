@@ -216,7 +216,13 @@ def _calendar_create_event(tool_input: dict[str, Any]) -> Any:
         )
     except HttpError as exc:
         raise ToolError(describe_http_error(exc, "Создание события")) from exc
-    return {"status": "created", **_event_view(created, calendar_id)}
+    result: dict[str, Any] = {"status": "created", **_event_view(created, calendar_id)}
+    if tool_input.get("attendees") and not google_client.can_invite():
+        result["note"] = (
+            "Приглашения участникам НЕ отправлены (календарь подключён через общий доступ): "
+            "участники записаны в описание встречи. Скажи об этом пользователю одной строкой."
+        )
+    return result
 
 
 def _calendar_update_event(tool_input: dict[str, Any]) -> Any:
@@ -331,10 +337,15 @@ def _calendar_delete_event(tool_input: dict[str, Any]) -> Any:
 
 def _preview_create(tool_input: dict[str, Any]) -> Preview:
     attendees = tool_input.get("attendees") or []
+    invites = google_client.can_invite()
     return Preview(
         title="Создать событие в календаре",
         summary=f"«{tool_input.get('title', 'без названия')}», начало {tool_input.get('start', '?')}"
-        + (f", участников: {len(attendees)} (им уйдут приглашения)" if attendees else ""),
+        + (
+            (f", участников: {len(attendees)} (им уйдут приглашения)" if invites
+             else f", участников: {len(attendees)} — приглашения НЕ рассылаются, участники будут в описании")
+            if attendees else ""
+        ),
         details={
             "Календарь": tool_input.get("calendar_id") or "primary (основной)",
             "Название": tool_input.get("title", ""),
@@ -390,7 +401,9 @@ def _preview_update(tool_input: dict[str, Any]) -> Preview:
     event = _describe_event(tool_input)
     return Preview(
         title="Изменить событие в календаре",
-        summary=f"{event} будет изменено; участники получат уведомление.",
+        summary=f"{event} будет изменено"
+        + ("; участники получат уведомление." if google_client.can_invite()
+           else "; уведомления участникам не рассылаются, новые участники — в описание."),
         details={"Событие": event, "Календарь": tool_input.get("calendar_id") or "основной", **changes},
     )
 
@@ -399,7 +412,8 @@ def _preview_delete(tool_input: dict[str, Any]) -> Preview:
     event = _describe_event(tool_input)
     return Preview(
         title="Удалить событие из календаря",
-        summary=f"{event} будет удалено безвозвратно, участникам уйдёт отмена.",
+        summary=f"{event} будет удалено безвозвратно"
+        + (", участникам уйдёт отмена." if google_client.can_invite() else ", участники уведомлены не будут."),
         details={
             "Событие": event,
             "Календарь": tool_input.get("calendar_id") or "основной",

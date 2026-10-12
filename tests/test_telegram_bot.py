@@ -308,7 +308,7 @@ class TestVoice:
         bot._handle_update(self._voice())
         assert seen == {"data": b"OggS-fake", "name": "voice.ogg", "mime": "audio/ogg"}
         assert "🎤" in api.texts()[0] and "Какие встречи завтра?" in api.texts()[0]
-        assert heard == ["Какие встречи завтра?"]
+        assert heard == ["[Голосовое] Какие встречи завтра?"]
 
     def test_recognition_failure_is_explained(self, monkeypatch) -> None:
         def transcribe(data, name, mime):
@@ -330,7 +330,7 @@ class TestVoice:
                             lambda *a, **k: pytest.fail("голосовое — не код авторизации"))
         bot._handle_update(message("/auth"))
         bot._handle_update(self._voice())
-        assert heard == ["4/0Axyz_abcdefghijkl"]
+        assert heard == ["[Голосовое] 4/0Axyz_abcdefghijkl"]
 
 
 class TestFormatting:

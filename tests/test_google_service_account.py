@@ -256,3 +256,28 @@ def test_downloaded_key_found_in_data_root_without_renaming(sa, monkeypatch, tmp
     (root / "operon-123456-ab12cd34ef56.json").write_text(json.dumps(KEY))
     monkeypatch.setattr(config, "PERSIST_DIR", root)
     assert google_sa.enabled() and google_sa.email() == KEY["client_email"]
+
+
+class TestCardsTellTheTruth:
+    """ТЗ: подтверждается то, что произойдёт. В режиме общего доступа приглашений нет."""
+
+    def _cards(self, monkeypatch, invites: bool):
+        from app.tools import calendar as cal
+        from app.tools.base import registry
+
+        monkeypatch.setattr(cal.google_client, "can_invite", lambda: invites)
+        monkeypatch.setattr(cal, "_describe_event", lambda tool_input: "«Планёрка» (2026-10-13 10:00)")
+        create = registry.get("calendar_create_event").build_preview(
+            {"title": "Встреча", "start": "2026-10-13T10:00", "attendees": ["a@x.ru"]})
+        update = registry.get("calendar_update_event").build_preview({"event_id": "e1", "start": "2026-10-14T10:00"})
+        delete = registry.get("calendar_delete_event").build_preview({"event_id": "e1"})
+        return create.summary, update.summary, delete.summary
+
+    def test_shared_mode_promises_no_invites(self, monkeypatch) -> None:
+        create, update, delete = self._cards(monkeypatch, invites=False)
+        assert "НЕ рассылаются" in create and "уйдут приглашения" not in create
+        assert "не рассылаются" in update and "не будут" in delete
+
+    def test_own_login_promises_invites(self, monkeypatch) -> None:
+        create, update, delete = self._cards(monkeypatch, invites=True)
+        assert "уйдут приглашения" in create and "получат уведомление" in update and "отмена" in delete
