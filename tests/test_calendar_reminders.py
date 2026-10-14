@@ -222,3 +222,15 @@ class TestCalendarEdits:
         monkeypatch.setattr(calendar_tools, "_calendar", broken)
         delete = registry.get("calendar_delete_event").build_preview({"event_id": "ev9"})
         assert "ev9" in delete.summary
+
+
+def test_event_times_are_shown_in_bot_timezone() -> None:
+    """Календарь сервисного аккаунта в UTC: 12:00Z — это 15:00 по Москве (живой прогон, октябрь 2026)."""
+    from app.tools.calendar import _event_view
+
+    view = _event_view({"id": "e", "summary": "Встреча",
+                        "start": {"dateTime": "2026-10-15T12:00:00Z"},
+                        "end": {"dateTime": "2026-10-15T12:45:00Z"}}, "primary")
+    if settings.timezone_name == "Europe/Moscow":
+        assert view["start"].startswith("2026-10-15T15:00") and view["end"].startswith("2026-10-15T15:45")
+    assert _event_view({"id": "e", "start": {"date": "2026-10-15"}, "end": {"date": "2026-10-16"}}, "p")["start"] == "2026-10-15"

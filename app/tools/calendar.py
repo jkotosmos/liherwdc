@@ -35,6 +35,24 @@ def _to_rfc3339(value: str, *, end_of_day: bool = False) -> str:
     return moment.isoformat()
 
 
+def _local(value: str | None) -> str | None:
+    """Время события — в часовом поясе бота.
+
+    Google отдаёт время в поясе календаря: у сервисного аккаунта это UTC
+    («12:00Z»). Модель передала бы его как есть — и встреча в 15:00 по Москве
+    превратилась бы в ответе в «12:00».
+    """
+    if not value or len(value) == 10:
+        return value
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        return value
+    return moment.astimezone(settings.tz).isoformat()
+
+
 def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
     start = event.get("start", {})
     end = event.get("end", {})
@@ -50,8 +68,8 @@ def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
         "event_id": event.get("id"),
         "calendar_id": calendar_id,
         "title": event.get("summary", "(без названия)"),
-        "start": start.get("dateTime") or start.get("date"),
-        "end": end.get("dateTime") or end.get("date"),
+        "start": _local(start.get("dateTime")) or start.get("date"),
+        "end": _local(end.get("dateTime")) or end.get("date"),
         "all_day": "date" in start,
         "location": event.get("location", ""),
         "description": (event.get("description") or "")[:2000],
@@ -377,7 +395,7 @@ def _describe_event(tool_input: dict[str, Any]) -> str:
     except Exception:  # noqa: BLE001 — карточка должна показаться в любом случае
         return f"Событие {event_id or '?'}"
     start = event.get("start", {})
-    when = (start.get("dateTime") or start.get("date") or "").replace("T", " ")[:16]
+    when = (_local(start.get("dateTime")) or start.get("date") or "").replace("T", " ")[:16]
     return f"«{event.get('summary', '(без названия)')}» ({when})"
 
 
