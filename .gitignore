@@ -10,6 +10,10 @@ credentials/
 *.pickle
 token.json
 client_secret*.json
+# Ключ сервисного аккаунта и прочие ключи Google, случайно положенные в корень.
+/*.json
+*service_account*.json
+operon-data/
 
 # Локальное состояние агента (сессии, реестр поручений)
 data/*

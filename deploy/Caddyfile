@@ -1,0 +1,5 @@
+# HTTPS для бота: сертификат Let's Encrypt выдаётся автоматически.
+# Домен берётся из OPERON_DOMAIN в .env, например operon.example.ru.
+{$OPERON_DOMAIN} {
+	reverse_proxy operon:80
+}

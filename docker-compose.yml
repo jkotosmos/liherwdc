@@ -1,0 +1,44 @@
+# Запуск на своём сервере (Timeweb Cloud VPS и любой другой с Docker).
+#
+#   1. Положите рядом файл .env с настройками (как в .env.example).
+#   2. docker compose up -d --build
+#        Telegram-бот работает полностью: сообщения он забирает сам, входящие
+#        порты ему не нужны. Веб-чат открыт только на самом сервере (127.0.0.1:8080).
+#      docker compose --profile https up -d --build
+#        + HTTPS для домена из OPERON_DOMAIN: веб-чат, Mini App и вход через
+#        Google кнопкой (Web-клиент с адресом https://домен/oauth2/callback).
+#   3. Журнал: docker compose logs -f operon
+#
+# Всё состояние (входы Google, ключ сервисного аккаунта, поручения, напоминания,
+# индекс Кванта) лежит в ./operon-data на сервере и переживает пересборку.
+services:
+  operon:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OPERON_HOST: 0.0.0.0
+      OPERON_PORT: "80"
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./operon-data:/data
+
+  # HTTPS с автоматическим сертификатом Let's Encrypt. Нужен домен, указывающий
+  # на IP сервера (A-запись), и свободные порты 80/443.
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [operon]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OPERON_DOMAIN: ${OPERON_DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  caddy-data:

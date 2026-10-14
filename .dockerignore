@@ -13,3 +13,6 @@ examples/
 .env
 credentials/
 data/
+operon-data/
+/*.json
+deploy/

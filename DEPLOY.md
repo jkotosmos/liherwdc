@@ -167,6 +167,41 @@ python -m app.probe
 Если используете не RouterAI, а другой шлюз, задайте `OPERON_LLM_BASE_URL`
 и `OPERON_LLM_API_KEY` — та же проверка подберёт протокол.
 
+## Timeweb Cloud и любой сервер с Docker (docker compose)
+
+Нужен облачный сервер (VPS): у него есть постоянный диск, где бот хранит входы
+в Google, ключ сервисного аккаунта, поручения, напоминания и индекс Кванта.
+Если вместо сервера используется сервис «приложений» без постоянного
+хранилища, всё это будет пропадать при каждом деплое — проверьте, что у
+приложения есть постоянный том, смонтированный в `/data`.
+
+1. Сервер Ubuntu 22.04/24.04, от 1 ГБ памяти. Подключиться по SSH.
+2. Docker, если его нет: `curl -fsSL https://get.docker.com | sh`
+3. Код: `git clone https://github.com/jkotosmos/liherwdc.git operon && cd operon`
+4. Настройки: файл `.env` в этой папке — тот же, что на Amvera. Не переносите
+   `OPERON_HOST`, `OPERON_PORT`, `OPERON_PROXY`.
+5. Данные с Amvera (чтобы не подключать Google заново): скачайте содержимое
+   `/data` из раздела «Данные» и положите в `operon-data/` рядом с
+   `docker-compose.yml` — папки `credentials/`, `state/`, ключ сервисного
+   аккаунта и `client_secret_….json`. `OPERON_TOKEN_KEY` в `.env` должен
+   остаться прежним, иначе сохранённые входы Google не расшифруются.
+6. **Остановите проект на Amvera.** Один токен бота — один работающий бот,
+   иначе Telegram отдаёт сообщения то одному, то другому (409).
+7. Запуск: `docker compose up -d --build`, журнал: `docker compose logs -f operon`.
+   Telegram-бот работает сразу — входящие порты ему не нужны.
+8. HTTPS (веб-чат, Mini App, вход в Google кнопкой): домен с A-записью на IP
+   сервера; в `.env` — `OPERON_DOMAIN=bot.example.ru` и
+   `OPERON_PUBLIC_URL=https://bot.example.ru`; запуск
+   `docker compose --profile https up -d --build` — сертификат выпустится сам.
+   В Google Cloud у Web-клиента адрес возврата — `https://bot.example.ru/oauth2/callback`.
+9. Обновление: `git pull && docker compose up -d --build`.
+10. Проверка: `docker compose exec operon ffmpeg -version` (нужен для голосовых —
+    если не установился, голосовые идут только через Whisper шлюза) и `/check` в боте.
+
+Google на новом сервере: сервисный аккаунт работает без домена (ключ в
+`operon-data/`). Вход кнопкой с Web-клиентом требует HTTPS-домен (шаг 8); без
+домена подойдёт клиент типа «Desktop app» — вход с копированием адреса из браузера.
+
 ## Linux-сервер или виртуальный хостинг (SpaceWeb и т. п.) — из PowerShell
 
 Всё запускается с компьютера, на сервере ничего набирать не нужно:
