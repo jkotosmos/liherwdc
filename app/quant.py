@@ -65,6 +65,13 @@ KNOWN_SIZES = {
     1536: "openai/text-embedding-3-small",
     3072: "openai/text-embedding-3-large",
 }
+# Чем обычно наполняют коллекции такого размера — по порядку проверки. Первой
+# стоит модель платформы базы знаний OPERON (ai-knowledge-base-backend,
+# src/constants/ai.js): google/gemini-embedding-2, 3072.
+CANDIDATES = {
+    3072: ("google/gemini-embedding-2", "openai/text-embedding-3-large", "google/gemini-embedding-001"),
+    1536: ("openai/text-embedding-3-small", "openai/text-embedding-ada-002"),
+}
 
 
 class QuantError(Exception):
@@ -233,6 +240,7 @@ def reset_cache() -> None:
         _names_cache = None
         _model_checks.clear()
         _mirror_checked.clear()
+        _detected.clear()
 
 
 # --- разбор записи -----------------------------------------------------------
@@ -589,6 +597,36 @@ def model_match(info: CollectionInfo, conf: Config, model: str) -> float | None:
     return value
 
 
+_detected: dict[str, tuple[float, str]] = {}
+
+
+def matching_model(info: CollectionInfo, conf: Config) -> str | None:
+    """Модель, которой наполнена коллекция.
+
+    Настроенная — если её векторы совпадают с векторами базы; иначе первая
+    совпавшая из кандидатов этого размера. "" — не подошла ни одна (тогда
+    ищем по своему индексу); None — сверить не с чем (в коллекции нет записей
+    с текстом и вектором) — тогда доверяем настроенной.
+    """
+    cached = _detected.get(info.name)
+    if cached and time.monotonic() - cached[0] < INFO_TTL_SECONDS:
+        return cached[1]
+    candidates = list(dict.fromkeys(m for m in (conf.embedding_model, *CANDIDATES.get(info.size, ())) if m))
+    found = ""
+    for model in candidates:
+        try:
+            match = model_match(info, conf, model)
+        except QuantError:
+            continue
+        if match is None:
+            return conf.embedding_model or (candidates[0] if candidates else "") or None
+        if match >= SAME_MODEL_COSINE:
+            found = model
+            break
+    _detected[info.name] = (time.monotonic(), found)
+    return found
+
+
 def search(query: str, limit: int = 6) -> dict[str, Any]:
     conf = config()
     if not conf.enabled:
@@ -602,23 +640,24 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
     problems: list[str] = []
     for name in names:
         info = collection_info(name, conf)
-        model = _embedding_model(conf, info)
         points: list[dict] = []
-        if model and info.size:
+        if info.size:
             try:
-                vector = embed(query, conf, model)
-                foreign = len(vector) != info.size
-                if not foreign:
-                    match = model_match(info, conf, model)
-                    foreign = match is not None and match < SAME_MODEL_COSINE
-                if foreign:
-                    # Векторы базы построены не нашей моделью — ищем по своему
-                    # индексу того же текста (в Квант ничего не пишем).
-                    found.extend(_mirror_search(vector, info, conf, model, limit))
-                    modes.append(f"{name}: по смыслу (индекс бота, {model})")
+                model = matching_model(info, conf)
+                if model:
+                    vector = embed(query, conf, model)
+                    if len(vector) == info.size:
+                        points = _vector_search(vector, info, conf, limit)
+                        modes.append(f"{name}: по смыслу ({model})")
+                own = conf.embedding_model or KNOWN_SIZES.get(info.size, "")
+                mismatch = model == "" or (model and not points and len(vector) != info.size)
+                if mismatch and own:
+                    # Векторы базы построены моделью, которой у нас нет, — ищем
+                    # по своему индексу того же текста (в Квант ничего не пишем).
+                    vector = embed(query, conf, own)
+                    found.extend(_mirror_search(vector, info, conf, own, limit))
+                    modes.append(f"{name}: по смыслу (индекс бота, {own})")
                     continue
-                points = _vector_search(vector, info, conf, limit)
-                modes.append(f"{name}: по смыслу ({model})")
             except QuantError as exc:
                 problems.append(str(exc))
         if not points:
@@ -642,7 +681,7 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
 
 
 # Модели размером 3072, которые стоит проверить, если своя не подошла.
-CANDIDATES_3072 = ("openai/text-embedding-3-large", "google/gemini-embedding-001")
+CANDIDATES_3072 = CANDIDATES[3072]
 
 
 def probe(query: str = "тарифы", extra_models: tuple[str, ...] = ()) -> Iterator[str]:

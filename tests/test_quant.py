@@ -337,3 +337,21 @@ def test_selfcheck_warns_on_foreign_model(qdrant, monkeypatch) -> None:
     check = selfcheck.check_quant()[1]
     assert check.status == selfcheck.WARN and "ДРУГОЙ моделью" in check.detail
     assert "своему индексу" in check.detail
+
+
+
+def test_collection_model_is_detected_automatically(qdrant, monkeypatch) -> None:
+    """Указана не та модель (как было: text-embedding-3-large), а база — gemini-embedding-2:
+    бот находит её среди кандидатов и ищет прямо по векторам Кванта."""
+    TestModelMatch()._stored(qdrant, monkeypatch, [0.0, 0.0, 1.0, 0.0])
+    monkeypatch.setattr(quant, "CANDIDATES", {4: ("google/gemini-embedding-2",)})
+
+    def embed_many(texts, conf, model):
+        same = [0.0, 0.0, 1.0, 0.0]
+        return [same if model == "google/gemini-embedding-2" else [1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(quant, "embed_many", embed_many)
+    result = quant.search("тарифы")
+    assert "по смыслу (google/gemini-embedding-2)" in result["search_mode"]
+    assert any(path.endswith("/points/search") for _, path, _ in qdrant.calls)
+    assert "индекс бота" not in result["search_mode"]

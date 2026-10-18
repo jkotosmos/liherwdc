@@ -800,7 +800,14 @@ def check_quant() -> list[Check]:
                 ["Укажите в QDRANT_EMBEDDING_MODEL модель, которой наполняли базу."],
             ))
         elif info.points != 0 and (match := _quant_match(quant, info, conf, model)) is not None \
-                and match < quant.SAME_MODEL_COSINE:
+                and match < quant.SAME_MODEL_COSINE and (detected := _quant_detect(quant, info, conf)):
+            checks.append(Check(
+                f"Квант: {name}", OK,
+                f"{detail}; поиск по векторам Кванта ({detected}) — модель базы определена "
+                f"автоматически, указанная {model} не подходит",
+                [f"Чтобы не сверять при запуске: QDRANT_EMBEDDING_MODEL={detected}"],
+            ))
+        elif info.points != 0 and match is not None and match < quant.SAME_MODEL_COSINE:
             checks.append(Check(
                 f"Квант: {name}", WARN,
                 f"{detail}; база наполнена ДРУГОЙ моделью, не {model} (совпадение {match} из 1.0) — "
@@ -836,6 +843,13 @@ def check_voice() -> list[Check]:
         "Для голосовых Telegram (OGG) этим способом нужен ffmpeg — в Docker-образе он есть."
     ]
     return [Check("Распознавание голоса", OK, f"работает ({model})", hints)]
+
+
+def _quant_detect(quant: Any, info: Any, conf: Any) -> str:
+    try:
+        return quant.matching_model(info, conf) or ""
+    except quant.QuantError:
+        return ""
 
 
 def _quant_match(quant: Any, info: Any, conf: Any, model: str) -> float | None:
