@@ -195,14 +195,18 @@ def _personal_reminders(moment: datetime, account: str, sent: dict[str, str]) ->
 
     result = []
     for item in remind.due(account, moment):
-        if f"personal:{item['id']}" in sent:
+        if f"personal:{item['id']}:{item['at']}" in sent:
             continue  # уже ушло, но статус в файле не успел обновиться
         when = datetime.fromisoformat(item["at"])
         text = f"🔔 <b>Напоминание</b>\n{escape(item['text'])}"
+        repeat = item.get("repeat") or ""
+        if repeat in remind.REPEATS and repeat:
+            text += f"\n<i>Повторяется {remind.REPEATS[repeat]} — отменить: «отмени напоминание {item['id']}».</i>"
         if moment - when > timedelta(minutes=10):
             # Бот был выключен в назначенное время — честно говорим, что с опозданием.
             text += f"\n<i>Должно было прийти {when.strftime('%d.%m %H:%M')}.</i>"
-        result.append(Reminder(key=f"personal:{item['id']}", text=text, kind="personal", ref=item["id"]))
+        # Ключ — с временем: у повторяющегося напоминания каждый раз — новый.
+        result.append(Reminder(key=f"personal:{item['id']}:{item['at']}", text=text, kind="personal", ref=item["id"]))
     return result
 
 

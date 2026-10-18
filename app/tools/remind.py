@@ -20,6 +20,14 @@ from ..storage import read_json, update_json
 from .base import Preview, ToolError, ToolSpec, registry
 
 MAX_TEXT = 1000
+# Повтор: отчётность и контрольные точки обычно регулярны («каждый понедельник в 10:00»).
+REPEATS = {
+    "": "однократно",
+    "daily": "каждый день",
+    "weekdays": "по будням",
+    "weekly": "каждую неделю",
+    "monthly": "каждый месяц",
+}
 MAX_ACTIVE = 200
 # Давно доставленные и отменённые не храним вечно.
 KEEP_DAYS = 30
@@ -69,18 +77,52 @@ def _check(tool_input: dict[str, Any]) -> tuple[str, datetime]:
     return text, moment
 
 
+def next_time(moment: datetime, repeat: str, day: int | None = None) -> datetime:
+    """Следующий раз по правилу повтора — в то же время суток.
+
+    day — число месяца для monthly: после «31 января → 28 февраля» в марте снова 31-е.
+    """
+    if repeat == "daily":
+        return moment + timedelta(days=1)
+    if repeat == "weekdays":
+        moment += timedelta(days=1)
+        while moment.isoweekday() > 5:
+            moment += timedelta(days=1)
+        return moment
+    if repeat == "weekly":
+        return moment + timedelta(days=7)
+    if repeat == "monthly":
+        import calendar
+
+        year, month = (moment.year + 1, 1) if moment.month == 12 else (moment.year, moment.month + 1)
+        last = calendar.monthrange(year, month)[1]
+        return moment.replace(year=year, month=month, day=min(day or moment.day, last))
+    raise ValueError(repeat)
+
+
+def _repeat(tool_input: dict[str, Any]) -> str:
+    repeat = str(tool_input.get("repeat") or "").strip().lower()
+    if repeat in ("once", "none", "нет"):
+        repeat = ""
+    if repeat not in REPEATS:
+        raise ToolError(f"repeat: одно из {', '.join(r for r in REPEATS if r)} или пусто.")
+    return repeat
+
+
 def _view(item: dict[str, Any]) -> dict[str, Any]:
     moment = datetime.fromisoformat(item["at"])
     return {
         "reminder_id": item["id"],
         "text": item["text"],
         "at": moment.strftime("%Y-%m-%d %H:%M"),
+        "repeat": REPEATS.get(item.get("repeat", ""), "однократно"),
         "status": item.get("status", "active"),
     }
 
 
 def _create(tool_input: dict[str, Any]) -> Any:
     text, moment = _check(tool_input)
+    repeat = _repeat(tool_input)
     account = accounts.current()
 
     def mutate(data: dict[str, Any]) -> dict[str, Any]:
@@ -93,6 +135,8 @@ def _create(tool_input: dict[str, Any]) -> Any:
             "account": account,
             "text": text,
             "at": moment.isoformat(),
+            "repeat": repeat,
+            "day": moment.day,
             "created": _now().isoformat(timespec="seconds"),
             "status": "active",
         }
@@ -103,7 +147,8 @@ def _create(tool_input: dict[str, Any]) -> Any:
     return {
         "status": "created",
         "reminder": _view(item),
-        "note": "Бот пришлёт напоминание в Telegram в указанное время.",
+        "note": "Бот пришлёт напоминание в Telegram в указанное время"
+        + (f" и дальше {REPEATS[repeat]}, пока его не отменят." if repeat else "."),
     }
 
 
@@ -170,8 +215,17 @@ def mark_delivered(ids: list[str], moment: datetime) -> None:
         kept = []
         for item in data.setdefault("reminders", []):
             if item.get("id") in wanted:
-                item["status"] = "sent"
                 item["sent"] = moment.isoformat(timespec="seconds")
+                repeat = item.get("repeat") or ""
+                if repeat in REPEATS and repeat:
+                    # Повторяющееся — переносим на следующий раз (после «сейчас»,
+                    # даже если бот был выключен и пропустил несколько раз).
+                    when = datetime.fromisoformat(item["at"])
+                    while when <= moment:
+                        when = next_time(when, repeat, item.get("day"))
+                    item["at"] = when.isoformat()
+                else:
+                    item["status"] = "sent"
             if item.get("status") != "active":
                 try:
                     if datetime.fromisoformat(item["at"]) < horizon:
@@ -193,10 +247,12 @@ def _preview_create(tool_input: dict[str, Any]) -> Preview:
         at = _parse_moment(at).strftime("%d.%m.%Y %H:%M")
     except ToolError:
         pass
+    repeat = str(tool_input.get("repeat") or "").strip().lower()
+    label = REPEATS.get(repeat, repeat)
     return Preview(
         title="Создать напоминание",
-        summary=f"{at} бот напишет в Telegram: «{tool_input.get('text', '')}»",
-        details={"Когда": at, "Текст": tool_input.get("text", "")},
+        summary=f"{at}{' и дальше ' + label if repeat else ''} бот напишет в Telegram: «{tool_input.get('text', '')}»",
+        details={"Когда": at, "Повтор": label or "однократно", "Текст": tool_input.get("text", "")},
     )
 
 
@@ -227,7 +283,14 @@ registry.register(
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "О чём напомнить."},
-                "at": {"type": "string", "description": "Когда: YYYY-MM-DDTHH:MM."},
+                "at": {"type": "string", "description": "Когда (первый раз): YYYY-MM-DDTHH:MM."},
+                "repeat": {
+                    "type": "string",
+                    "enum": ["", "daily", "weekdays", "weekly", "monthly"],
+                    "description": "Повтор: daily — каждый день, weekdays — по будням, weekly — каждую "
+                    "неделю (в тот же день недели), monthly — каждый месяц (то же число). Пусто — один раз. "
+                    "Для отчётности и контрольных точек: «каждый понедельник в 10:00» → weekly.",
+                },
             },
             "required": ["text", "at"],
         },

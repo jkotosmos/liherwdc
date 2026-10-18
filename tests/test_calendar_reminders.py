@@ -234,3 +234,53 @@ def test_event_times_are_shown_in_bot_timezone() -> None:
     if settings.timezone_name == "Europe/Moscow":
         assert view["start"].startswith("2026-10-15T15:00") and view["end"].startswith("2026-10-15T15:45")
     assert _event_view({"id": "e", "start": {"date": "2026-10-15"}, "end": {"date": "2026-10-16"}}, "p")["start"] == "2026-10-15"
+
+
+class TestRepeatingReminders:
+    """ТЗ: напоминать об отчётности и контрольных точках — они регулярные."""
+
+    def test_next_time_rules(self) -> None:
+        friday = at("2026-10-16T10:00")
+        assert remind.next_time(friday, "daily") == at("2026-10-17T10:00")
+        assert remind.next_time(friday, "weekdays") == at("2026-10-19T10:00")  # пятница → понедельник
+        assert remind.next_time(friday, "weekly") == at("2026-10-23T10:00")
+        assert remind.next_time(at("2026-01-31T09:00"), "monthly") == at("2026-02-28T09:00")
+        assert remind.next_time(at("2026-12-15T09:00"), "monthly") == at("2027-01-15T09:00")
+        # После короткого месяца возвращается исходное число, а не остаётся 28-е.
+        assert remind.next_time(at("2026-02-28T09:00"), "monthly", 31) == at("2026-03-31T09:00")
+
+    def test_weekly_report_comes_every_week_and_stops_on_cancel(self, state) -> None:
+        created, err = call("reminder_create", {"text": "Сдать отчёт", "at": future(10), "repeat": "weekly"}, KIRILL)
+        assert not err and created["reminder"]["repeat"] == "каждую неделю"
+        rid = created["reminder"]["reminder_id"]
+        first = datetime.fromisoformat(next(r for r in remind._load() if r["id"] == rid)["at"])
+
+        moment = first + timedelta(minutes=1)
+        plan = [r for r in reminders.pending(moment, KIRILL) if r.kind == "personal"]
+        assert len(plan) == 1
+        reminders.mark_sent(plan, moment)
+        item = next(r for r in remind._load() if r["id"] == rid)
+        assert item["status"] == "active" and datetime.fromisoformat(item["at"]) == first + timedelta(days=7)
+        assert [r for r in reminders.pending(moment, KIRILL) if r.kind == "personal"] == []
+
+        # Неделя прошла — снова приходит, ключ отправки уже другой.
+        later = first + timedelta(days=7, minutes=1)
+        assert len([r for r in reminders.pending(later, KIRILL) if r.kind == "personal"]) == 1
+
+        call("reminder_cancel", {"reminder_id": rid}, KIRILL)
+        assert [r for r in reminders.pending(later, KIRILL) if r.kind == "personal"] == []
+
+    def test_missed_occurrences_are_skipped_not_spammed(self, state) -> None:
+        created, _ = call("reminder_create", {"text": "Планёрка", "at": future(5), "repeat": "daily"}, KIRILL)
+        rid = created["reminder"]["reminder_id"]
+        first = datetime.fromisoformat(next(r for r in remind._load() if r["id"] == rid)["at"])
+        back = first + timedelta(days=3, hours=2)  # бот лежал три дня
+        plan = [r for r in reminders.pending(back, KIRILL) if r.kind == "personal"]
+        assert len(plan) == 1  # одно сообщение, а не три
+        reminders.mark_sent(plan, back)
+        nxt = datetime.fromisoformat(next(r for r in remind._load() if r["id"] == rid)["at"])
+        assert back < nxt <= back + timedelta(days=1)
+
+    def test_bad_repeat_is_explained(self, state) -> None:
+        _, err = call("reminder_create", {"text": "x", "at": future(10), "repeat": "yearly"}, KIRILL)
+        assert err
