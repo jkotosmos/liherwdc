@@ -29,6 +29,8 @@ DISTRIBUTION_TO_MODULE = {
     "google-auth-oauthlib": "google_auth_oauthlib",
     "uvicorn[standard]": "uvicorn",
 }
+# Пакеты, которые ставят больше одного модуля.
+EXTRA_MODULES = {"pymongo": {"bson"}}
 
 
 def declared_modules() -> set[str]:
@@ -39,6 +41,7 @@ def declared_modules() -> set[str]:
             continue
         name = re.split(r"[<>=!~;]", line)[0].strip()
         modules.add(DISTRIBUTION_TO_MODULE.get(name, name.replace("-", "_")))
+        modules |= EXTRA_MODULES.get(name, set())
     return modules
 
 

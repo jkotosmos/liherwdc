@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -283,7 +283,8 @@ def describe_point(point: dict[str, Any], collection: str, conf: Config) -> dict
     if link and not link.startswith(("http://", "https://")):
         link = ""  # «source» бывает путём к файлу — ссылкой его не выдаём
     file_id = _first(layers, ID_KEYS)
-    if not link and re.fullmatch(r"[\w-]{20,}", file_id or ""):
+    # 24 hex-символа — номер документа на сайте (MongoDB), а не файл Google Drive.
+    if not link and re.fullmatch(r"[\w-]{20,}", file_id or "") and not re.fullmatch(r"[0-9a-f]{24}", file_id):
         link = f"https://drive.google.com/open?id={file_id}"
     title = _first(layers, TITLE_KEYS) or _first(layers, ("source",)) or "(без названия)"
     result: dict[str, Any] = {
@@ -295,6 +296,11 @@ def describe_point(point: dict[str, Any], collection: str, conf: Config) -> dict
         "date": _first(layers, DATE_KEYS) or None,
         "point_id": point.get("id"),
     }
+    topic_id = _first(layers, ("topicId", "topic_id"))
+    if file_id:
+        result["file_id"] = file_id
+    if topic_id:
+        result["topic_id"] = topic_id
     if point.get("score") is not None:
         result["score"] = round(float(point["score"]), 3)
     if not text:
@@ -627,10 +633,32 @@ def matching_model(info: CollectionInfo, conf: Config) -> str | None:
     return found
 
 
+def _with_access(conf: Config) -> tuple[Config, dict[str, Any] | None]:
+    """Права текущего пользователя: роль с сайта базы знаний (MongoDB).
+
+    Роль найдена — ищем только среди документов этой роли. Роли нет —
+    роли по умолчанию из QDRANT_ROLES, если заданы; иначе документы не
+    показываем: ТЗ — «только в рамках прав». Базы сайта нет — как раньше.
+    """
+    from . import site_db
+
+    if not site_db.enabled():
+        return conf, None
+    found = site_db.access()
+    if found.state == "role":
+        return replace(conf, roles=(found.role_id,)), {"role": found.role_name or found.role_id}
+    if conf.roles and found.state != "blocked":
+        return conf, {"role": "по умолчанию (QDRANT_ROLES)"}
+    return conf, {"denied": site_db.explain(found, site_db.telegram_id())}
+
+
 def search(query: str, limit: int = 6) -> dict[str, Any]:
     conf = config()
     if not conf.enabled:
         return {"status": "not_configured"}
+    conf, scope = _with_access(conf)
+    if scope and scope.get("denied"):
+        return {"status": "no_access", "hint": scope["denied"]}
     names = collection_names(conf)
     if not names:
         return {"status": "empty", "hint": "В Кванте нет ни одной коллекции."}
@@ -666,12 +694,20 @@ def search(query: str, limit: int = 6) -> dict[str, Any]:
         found.extend(describe_point(p, name, conf) for p in points)
 
     found.sort(key=lambda r: r.get("score") or 0, reverse=True)
+    found = found[:limit]
+    if scope is not None and found:
+        from . import site_db
+
+        if warning := site_db.add_dates(found):
+            problems.append(warning)
     response: dict[str, Any] = {
         "status": "ok" if found else "not_found",
         "query": query,
         "search_mode": "; ".join(modes),
-        "results": found[:limit],
+        "results": found,
     }
+    if scope is not None:
+        response["access_role"] = scope["role"]
     if problems:
         response["warnings"] = problems
     return response

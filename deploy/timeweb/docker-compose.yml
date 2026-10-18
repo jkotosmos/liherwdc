@@ -81,10 +81,13 @@ services:
       OPERON_PUBLIC_URL: https://${BOT_DOMAIN}
       QDRANT_URL: http://qdrant:6333
       QDRANT_API_KEY: ${QDRANT_API_KEY}
+      # Роли пользователей и даты документов — из базы сайта (только чтение).
+      OPERON_MONGODB_URI: mongodb://mongo:27017/operon
     volumes:
       - ./data/bot:/data
     depends_on:
       - qdrant
+      - mongo
 
   caddy:
     image: caddy:2

@@ -19,6 +19,12 @@ def _quant_search(tool_input: dict[str, Any]) -> Any:
         raise ToolError(f"{exc} Скажи пользователю, что основная база сейчас недоступна.") from exc
     if result["status"] == "not_configured":
         raise ToolError("Квант не подключён (QDRANT_URL не задан). Ищи в kb_search и на Google Диске.")
+    if result["status"] == "no_access":
+        result["hint"] += (
+            " Передай это пользователю своими словами. Не пересказывай документы Кванта из памяти "
+            "и не ищи их в обход прав; его личный Google Диск (drive_search) — можно."
+        )
+        return result
     if result["status"] != "ok":
         result["hint"] = (
             "В Кванте по этому запросу ничего нет. Попробуй другую формулировку, затем kb_search "
@@ -29,6 +35,11 @@ def _quant_search(tool_input: dict[str, Any]) -> Any:
             "Квант — источник правды. Ссылайся: «Квант: название, дата, ссылка». "
             "Если личный Диск говорит другое — отвечай по Кванту и назови расхождение."
         )
+        if any(r.get("date_meaning") for r in result["results"]):
+            result["note"] += (
+                " date — дата документа с сайта базы знаний, date_meaning — что это за дата. "
+                "topic_status «на проверке» или «в архиве» — так и скажи: тема не утверждена или устарела."
+            )
     return result
 
 

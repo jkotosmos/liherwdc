@@ -263,7 +263,8 @@ GOOGLE_CLIENT_SECRET      <секрет OAuth-клиента>
 OPERON_GOOGLE_CLIENT_TYPE desktop   (обязательно для клиента типа Desktop — см. ниже)
 QDRANT_URL                https://<база>.amvera.io   (Квант)
 QDRANT_API_KEY            <ключ Qdrant>
-QDRANT_EMBEDDING_MODEL    openai/text-embedding-3-large
+QDRANT_EMBEDDING_MODEL    google/gemini-embedding-2   (можно не задавать — бот определит сам)
+OPERON_MONGODB_URI        <адрес MongoDB сайта базы знаний> (необязательно: права и даты Кванта)
 ```
 
 **Не переносите с компьютера** `OPERON_HOST`, `OPERON_PORT` и `OPERON_PROXY`:

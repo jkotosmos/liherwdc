@@ -825,6 +825,45 @@ def check_quant() -> list[Check]:
     return checks
 
 
+def check_quant_rights() -> list[Check]:
+    """Права к документам Кванта: роль с сайта базы знаний, роли по умолчанию или без фильтра."""
+    from . import quant, site_db
+    from .telegram import access
+
+    conf = quant.config()
+    if not conf.enabled:
+        return []
+    if not site_db.enabled():
+        if conf.roles:
+            return [Check("Права в Кванте", OK, f"всем — роли из QDRANT_ROLES: {', '.join(conf.roles)}")]
+        many = len(access.allowed()) > 1
+        return [Check(
+            "Права в Кванте", WARN if many else OK,
+            "без фильтра по ролям: все пользователи бота видят все документы Кванта",
+            ["Чтобы права назначались на сайте базы знаний, задайте OPERON_MONGODB_URI — адрес его "
+             "MongoDB (на сервере Timeweb: mongodb://mongo:27017/operon)."],
+        )]
+    ok, detail = site_db.check()
+    if not ok:
+        return [Check(
+            "Права в Кванте", FAIL, detail,
+            ["Проверьте OPERON_MONGODB_URI. Пока база недоступна, документы Кванта показываются "
+             "только по ролям из QDRANT_ROLES (если заданы)."],
+        )]
+    checks = [Check("База сайта (MongoDB)", OK, detail)]
+    found = site_db.access()
+    user = site_db.telegram_id()
+    if found.state == "role":
+        checks.append(Check("Права в Кванте", OK, f"ваша роль: {found.role_name or found.role_id}"))
+    elif conf.roles and found.state != "blocked":
+        checks.append(Check(
+            "Права в Кванте", WARN, f"у вас (ID {user}) нет роли на сайте — роли по умолчанию из QDRANT_ROLES",
+        ))
+    else:
+        checks.append(Check("Права в Кванте", WARN, site_db.explain(found, user)))
+    return checks
+
+
 def check_voice() -> list[Check]:
     """Распознавание голосовых: пробуем на секунде тишины — без ffmpeg и без записи."""
     from . import stt
@@ -870,6 +909,7 @@ def run_groups() -> list[tuple[str, list[Check]]]:
         ("Интернет", check_search),
         ("База знаний", check_knowledge_base),
         ("Квант (Qdrant)", check_quant),
+        ("Права в Кванте", check_quant_rights),
         ("Голосовые", check_voice),
     ]
     results = []

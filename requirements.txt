@@ -37,3 +37,8 @@ google-auth-httplib2>=0.2.0
 httplib2>=0.22
 requests>=2.31
 cryptography>=41.0
+
+# --- База сайта базы знаний (опционально) ---
+# Роли пользователей агента и даты документов «Кванта» (app/site_db.py).
+# Только чтение; без OPERON_MONGODB_URI не используется.
+pymongo>=4.6

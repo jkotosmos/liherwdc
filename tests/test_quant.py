@@ -68,7 +68,7 @@ class FakeQdrant:
 @pytest.fixture
 def qdrant(monkeypatch, tmp_path):
     for name in ("QDRANT_COLLECTION", "QDRANT_VECTOR_NAME", "QDRANT_EMBEDDING_MODEL", "QDRANT_TEXT_FIELD",
-                 "QDRANT_API_KEY", "QDRANT_ROLES"):
+                 "QDRANT_API_KEY", "QDRANT_ROLES", "OPERON_MONGODB_URI"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("QDRANT_URL", URL + "/")
     monkeypatch.setenv("QDRANTSERVICEAPI_KEY", "secret")  # имя ключа из панели Amvera
