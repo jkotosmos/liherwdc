@@ -29,3 +29,9 @@ knowledge_base/*
 !knowledge_base/_templates/**
 bot.log
 bot.pid
+
+# Сервер со всей системой (deploy/timeweb): настройки, данные, код сайта
+deploy/timeweb/*.env
+deploy/timeweb/.env
+deploy/timeweb/data/
+deploy/timeweb/src/

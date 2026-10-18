@@ -1,0 +1,104 @@
+# Вся система OPERON на одном сервере (Timeweb Cloud VPS или любой с Docker):
+#   • сайт базы знаний — фронтенд и бэкенд (github.com/skullmare/ai-knowledge-base-*)
+#   • Telegram-бот ассистента OPERON (этот репозиторий)
+#   • MongoDB и Qdrant («Квант») — данные на диске сервера в ./data
+#   • Caddy — HTTPS для двух доменов с автоматическими сертификатами
+#
+# Запуск — ./setup.sh (клонирует репозитории сайта и поднимает всё).
+#
+# Сайт и его API живут на ОДНОМ домене (KB_DOMAIN): /api → бэкенд, остальное →
+# фронтенд. Так не нужна правка CORS в коде бэкенда (там зашит адрес Amvera).
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - ./data/mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?задайте QDRANT_API_KEY в .env}
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"   # только для переноса данных с сервера (migrate.sh)
+
+  backend:
+    build: ./src/ai-knowledge-base-backend
+    restart: unless-stopped
+    env_file: backend.env
+    environment:
+      PORT: "3000"
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/operon
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      MAIN_DOMAIN: ${KB_DOMAIN}
+      RESET_PASSWORD_URL: https://${KB_DOMAIN}/reset-password
+    depends_on:
+      mongo:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./src/ai-knowledge-base-frontend
+      # Свой Dockerfile: в исходном адрес API зашит (Amvera), здесь — домен сайта.
+      dockerfile_inline: |
+        FROM node:20-alpine AS builder
+        WORKDIR /app
+        COPY package*.json ./
+        RUN npm ci
+        COPY . .
+        ARG VITE_API_URL
+        ENV VITE_API_URL=$${VITE_API_URL}
+        RUN npm run build
+        FROM node:20-alpine
+        WORKDIR /app
+        RUN npm install -g serve
+        COPY --from=builder /app/dist ./dist
+        EXPOSE 3000
+        CMD ["serve", "-s", "dist", "-l", "3000"]
+      args:
+        VITE_API_URL: https://${KB_DOMAIN}
+    restart: unless-stopped
+
+  bot:
+    build: ../..
+    restart: unless-stopped
+    env_file: bot.env
+    environment:
+      OPERON_HOST: 0.0.0.0
+      OPERON_PORT: "80"
+      OPERON_PUBLIC_URL: https://${BOT_DOMAIN}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - ./data/bot:/data
+    depends_on:
+      - qdrant
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KB_DOMAIN: ${KB_DOMAIN:?задайте KB_DOMAIN в .env}
+      BOT_DOMAIN: ${BOT_DOMAIN:?задайте BOT_DOMAIN в .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+    depends_on:
+      - backend
+      - frontend
+      - bot
