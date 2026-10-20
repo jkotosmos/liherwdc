@@ -50,6 +50,16 @@ check_ip() {
     echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { echo "ОШИБКА: «$1» не похоже на IP-адрес"; exit 1; }
 }
 
+# Указан адрес этого же сервера — значит, команду запустили не на том сервере.
+not_self() {
+    if ip -4 addr show 2>/dev/null | grep -q "inet $1/"; then
+        echo "ОШИБКА: $1 — это адрес ЭТОГО сервера ($(hostname))."
+        echo "Похоже, команда запущена не на том сервере: «db» и «peer» — на сервере баз,"
+        echo "«app» — на сервере приложения."
+        exit 1
+    fi
+}
+
 start() {
     systemctl enable wg-quick@wg0 >/dev/null 2>&1
     systemctl restart wg-quick@wg0
@@ -81,6 +91,7 @@ case "${1:-}" in
 db)
     [ -n "${2:-}" ] || usage
     check_ip "$2"
+    not_self "$2"
     install_wg
     make_keys
     cat > "$CONF" <<EOF
@@ -100,6 +111,7 @@ EOF
 app)
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || usage
     check_ip "$2"
+    not_self "$2"
     check_key "$3"
     install_wg
     make_keys
