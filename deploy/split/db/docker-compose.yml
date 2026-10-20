@@ -1,0 +1,45 @@
+# Сервер баз (в РФ): MongoDB сайта и Qdrant («Квант»).
+#
+# Наружу ничего не открыто: порты слушают только адрес в приватном канале
+# WireGuard (WG_IP, по умолчанию 10.8.0.1). Сервер приложения ходит сюда
+# через этот канал; из интернета базы не видны.
+#
+# Поэтому WireGuard поднимается ДО баз (../wireguard.sh): пока интерфейса
+# с адресом WG_IP нет, Docker не сможет занять порты и контейнеры не стартуют.
+#
+# Доступы — по минимуму:
+#   operon_app  — сайт, чтение и запись базы operon;
+#   operon_bot  — бот, только чтение базы operon (роли и даты документов);
+#   root        — только для администрирования, приложениям не выдаётся.
+# Пользователи создаются при первом запуске из initdb/ (пустой data/mongo).
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?задайте MONGO_ROOT_USER в .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?задайте MONGO_ROOT_PASSWORD в .env}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?задайте MONGO_APP_PASSWORD в .env}
+      MONGO_BOT_PASSWORD: ${MONGO_BOT_PASSWORD:?задайте MONGO_BOT_PASSWORD в .env}
+    volumes:
+      - ./data/mongo:/data/db
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${WG_IP:-10.8.0.1}:27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
+    environment:
+      # Полный ключ — сайту (он пишет документы), ключ только на чтение — боту.
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?задайте QDRANT_API_KEY в .env}
+      QDRANT__SERVICE__READ_ONLY_API_KEY: ${QDRANT_READ_KEY:?задайте QDRANT_READ_KEY в .env}
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    ports:
+      - "${WG_IP:-10.8.0.1}:6333:6333"

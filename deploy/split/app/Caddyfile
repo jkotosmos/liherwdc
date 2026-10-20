@@ -1,0 +1,14 @@
+# Сайт базы знаний: API и фронтенд на одном домене (без правки CORS в бэкенде).
+{$KB_DOMAIN} {
+	handle /api/* {
+		reverse_proxy backend:3000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+# Бот: веб-чат, Mini App, вход в Google кнопкой (/oauth2/callback).
+{$BOT_DOMAIN} {
+	reverse_proxy bot:80
+}

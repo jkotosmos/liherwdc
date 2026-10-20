@@ -35,3 +35,9 @@ deploy/timeweb/*.env
 deploy/timeweb/.env
 deploy/timeweb/data/
 deploy/timeweb/src/
+
+# Два сервера (deploy/split): настройки, данные, код сайта
+deploy/split/*/.env
+deploy/split/*/*.env
+deploy/split/*/data/
+deploy/split/app/src/
