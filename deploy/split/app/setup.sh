@@ -41,14 +41,48 @@ for v in KB_DOMAIN BOT_DOMAIN MONGO_APP_PASSWORD MONGO_BOT_PASSWORD QDRANT_API_K
     eval "val=\${$v:-}"
     [ -n "$val" ] || { echo "ОШИБКА: в .env не задан $v"; exit 1; }
 done
-if grep -q '^TELEGRAM_BOT_TOKEN=' bot.env && grep -q '^TG_BOT_TOKEN=' backend.env; then
-    a=$(grep '^TELEGRAM_BOT_TOKEN=' bot.env | cut -d= -f2-)
-    b=$(grep '^TG_BOT_TOKEN=' backend.env | cut -d= -f2-)
-    if [ -n "$a" ] && [ "$a" = "$b" ]; then
-        echo "ОШИБКА: у бота OPERON и у бота сайта один и тот же токен Telegram —"
-        echo "они будут отбирать друг у друга сообщения. Нужны два разных бота."
-        exit 1
-    fi
+a=$(grep '^TELEGRAM_BOT_TOKEN=' bot.env | cut -d= -f2- || true)
+b=$(grep '^TG_BOT_TOKEN=' backend.env | cut -d= -f2- || true)
+if [ -n "$a" ] && [ "$a" = "$b" ]; then
+    echo "ОШИБКА: у бота OPERON и у бота сайта один и тот же токен Telegram —"
+    echo "они будут отбирать друг у друга сообщения. Нужны два разных бота."
+    exit 1
+fi
+
+echo "== Проверка ключей (значения не выводятся)"
+# Токен с опечаткой Telegram отвергает сразу — ловим это до сборки.
+check_tg() {
+    [ -n "$2" ] || { echo "ВНИМАНИЕ: $1 — токен не задан"; return 0; }
+    resp=$(curl -s -m 15 "https://api.telegram.org/bot$2/getMe" || true)
+    case "$resp" in
+        *'"ok":true'*) echo "Telegram, $1: токен принят" ;;
+        *'"ok":false'*) echo "ОШИБКА: Telegram, $1: токен не принят — проверьте значение"; exit 1 ;;
+        *) echo "ВНИМАНИЕ: Telegram, $1: проверить не удалось (нет связи с api.telegram.org)" ;;
+    esac
+}
+check_tg "бот OPERON (bot.env)" "$a"
+check_tg "бот сайта (backend.env)" "$b"
+# Почта: вход на сайт — по коду из письма. Не блокируем запуск, но говорим сразу.
+if command -v python3 >/dev/null 2>&1; then
+    smtp=$( (set -a; . ./backend.env; set +a; python3 - <<'PY'
+import os, smtplib, socket
+try:
+    s = smtplib.SMTP(os.environ.get("EMAIL_HOST", ""), int(os.environ.get("EMAIL_PORT") or 587), timeout=15)
+    s.starttls()
+    s.login(os.environ.get("EMAIL_USER", ""), os.environ.get("EMAIL_PASSWORD", ""))
+    s.quit()
+    print("ok")
+except smtplib.SMTPAuthenticationError:
+    print("auth")
+except (OSError, socket.timeout, smtplib.SMTPException):
+    print("net")
+PY
+) 2>/dev/null || true)
+    case "$smtp" in
+        ok) echo "Почта: вход принят — коды входа на сайт будут приходить" ;;
+        auth) echo "ВНИМАНИЕ: почта: пароль не принят (EMAIL_PASSWORD) — коды входа на сайт не придут" ;;
+        *) echo "ВНИМАНИЕ: почта: сервер недоступен — вероятно, хостинг закрыл порт ${EMAIL_PORT:-587}; нужна заявка в поддержку, иначе коды входа на сайт не придут" ;;
+    esac
 fi
 
 echo "== Канал к базам"
