@@ -31,8 +31,14 @@
 
 На обоих серверах (Ubuntu 24.04, от root):
 ```sh
-git clone https://github.com/jkotosmos/liherwdc.git /opt/operon
+git clone -b main https://github.com/jkotosmos/liherwdc.git /opt/operon
 cd /opt/operon/deploy/split
+```
+Обязательно `-b main`: ветка репозитория по умолчанию — другая, в ней нет `deploy/`.
+Если `/opt/operon` уже есть (клон на другой ветке), переключите его, ничего не удаляя —
+папки с данными и `.env` git не трогает:
+```sh
+git -C /opt/operon fetch origin main && git -C /opt/operon checkout -B main origin/main
 ```
 
 ### 1. Канал WireGuard (три команды, ключи создаются на месте)

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Установка и обновление всей системы OPERON на сервере.
-#   Первый раз:  git clone https://github.com/jkotosmos/liherwdc.git /opt/operon
+#   Первый раз:  git clone -b main https://github.com/jkotosmos/liherwdc.git /opt/operon
 #                cd /opt/operon/deploy/timeweb && sh setup.sh
 #   Обновление:  cd /opt/operon/deploy/timeweb && sh setup.sh
 set -e

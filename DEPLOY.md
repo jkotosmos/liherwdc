@@ -177,7 +177,7 @@ python -m app.probe
 
 1. Сервер Ubuntu 22.04/24.04, от 1 ГБ памяти. Подключиться по SSH.
 2. Docker, если его нет: `curl -fsSL https://get.docker.com | sh`
-3. Код: `git clone https://github.com/jkotosmos/liherwdc.git operon && cd operon`
+3. Код: `git clone -b main https://github.com/jkotosmos/liherwdc.git operon && cd operon`
 4. Настройки: файл `.env` в этой папке — тот же, что на Amvera. Не переносите
    `OPERON_HOST`, `OPERON_PORT`, `OPERON_PROXY`.
 5. Данные с Amvera (чтобы не подключать Google заново): скачайте содержимое
@@ -207,7 +207,7 @@ Google на новом сервере: сервисный аккаунт раб�
 Всё запускается с компьютера, на сервере ничего набирать не нужно:
 
 ```powershell
-ssh <логин>@<сервер> "git clone https://github.com/jkotosmos/liherwdc.git operon || git -C operon pull"
+ssh <логин>@<сервер> "git clone -b main https://github.com/jkotosmos/liherwdc.git operon || git -C operon pull origin main"
 scp .env <логин>@<сервер>:operon/.env
 ssh <логин>@<сервер> "sh operon/scripts/server-setup.sh"
 ssh <логин>@<сервер> "sh operon/scripts/install-cron.sh"

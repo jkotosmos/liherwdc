@@ -13,7 +13,7 @@
 
 ## 2. Установка
 ```sh
-git clone https://github.com/jkotosmos/liherwdc.git /opt/operon
+git clone -b main https://github.com/jkotosmos/liherwdc.git /opt/operon
 cd /opt/operon/deploy/timeweb
 cp .env.example .env               # домены и ключ нового Qdrant
 cp backend.env.example backend.env # настройки сайта (админ, JWT, Yandex, почта, RouterAI)
