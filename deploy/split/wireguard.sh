@@ -133,7 +133,16 @@ peer)
 PublicKey = $2
 AllowedIPs = $APP_IP/32
 EOF
-    start
+    if ip link show wg0 >/dev/null 2>&1; then
+        # Канал уже поднят — применяем без перезапуска интерфейса: базы,
+        # занявшие порты на 10.8.0.1, ничего не заметят.
+        umask 077
+        wg-quick strip wg0 > /etc/wireguard/wg0.stripped
+        wg syncconf wg0 /etc/wireguard/wg0.stripped
+        rm -f /etc/wireguard/wg0.stripped
+    else
+        start
+    fi
     echo
     echo "Канал настроен. Проверка с сервера приложения: ping -c 3 $DB_IP"
     ;;
