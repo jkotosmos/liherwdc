@@ -285,10 +285,11 @@ def models(tools_only: bool = True) -> JSONResponse:
     # Неизвестно (шлюз не сообщил) — показываем с пометкой.
     # Выбор ограничен тремя семействами: каталог большой, а людям нужны они.
     tooled = [m for m in catalog if not tools_only or m["tools"] is not False]
+    # Из каждого семейства — только несколько актуальных версий (model_families.curate).
+    allowed = [m for m in tooled if model_families.is_allowed(m["id"])]
     listed = [
         {**m, "family": model_families.family(m["id"])}
-        for m in tooled
-        if model_families.is_allowed(m["id"])
+        for m in model_families.curate(allowed, chosen.get("model", ""))
     ]
     return JSONResponse(
         {
@@ -301,7 +302,8 @@ def models(tools_only: bool = True) -> JSONResponse:
                 for key, label in model_families.FAMILIES
             ],
             "hidden_without_tools": len(catalog) - len(tooled),
-            "hidden_by_family": len(tooled) - len(listed),
+            "hidden_by_family": len(tooled) - len(allowed),
+            "hidden_old_versions": len(allowed) - len(listed),
         }
     )
 

@@ -252,3 +252,43 @@ def test_dashboard_is_only_in_miniapp(client) -> None:
     assert "window.OPERON_MINIAPP = true" not in web.text
     assert "telegram-web-app.js" not in web.text
     assert "window.OPERON_MINIAPP = true" in mini.text
+
+
+CATALOG_IDS = """
+deepseek/deepseek-chat deepseek/deepseek-chat-v3-0324 deepseek/deepseek-chat-v3.1 deepseek/deepseek-v3.1-terminus
+deepseek/deepseek-v3.2 deepseek/deepseek-v3.2-exp deepseek/deepseek-r1 deepseek/deepseek-r1-distill-llama-70b
+deepseek/deepseek-chat:free
+openai/gpt-4o openai/gpt-4o-mini openai/gpt-4.1 openai/gpt-4.1-mini openai/gpt-4.1-nano openai/gpt-5 openai/gpt-5-mini
+openai/gpt-5-nano openai/gpt-5-chat openai/gpt-5-codex openai/gpt-5.1 openai/gpt-5.2 openai/gpt-5.2-pro openai/gpt-oss-120b
+anthropic/claude-3.5-haiku anthropic/claude-3.7-sonnet anthropic/claude-3.7-sonnet:thinking anthropic/claude-sonnet-4
+anthropic/claude-opus-4.1 anthropic/claude-sonnet-4.5 anthropic/claude-haiku-4.5 anthropic/claude-opus-4.5
+""".split()
+
+
+def _ids(models) -> list[str]:
+    return [m["id"] for m in models]
+
+
+def test_short_list_keeps_only_current_versions() -> None:
+    picked = _ids(model_families.curate([{"id": i, "name": i} for i in CATALOG_IDS]))
+    assert picked == [
+        "deepseek/deepseek-v3.2",
+        "openai/gpt-5.2", "openai/gpt-5.1", "openai/gpt-5-mini", "openai/gpt-5-nano", "openai/gpt-4.1-mini",
+        "anthropic/claude-opus-4.5", "anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5",
+    ]
+
+
+def test_new_deepseek_version_replaces_old_one() -> None:
+    ids = CATALOG_IDS + ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"]
+    picked = _ids(model_families.curate([{"id": i, "name": i} for i in ids]))
+    assert [i for i in picked if i.startswith("deepseek/")] == ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]
+
+
+def test_current_old_model_stays_visible() -> None:
+    picked = _ids(model_families.curate([{"id": i, "name": i} for i in CATALOG_IDS], "deepseek/deepseek-chat"))
+    assert "deepseek/deepseek-chat" in picked and "deepseek/deepseek-chat-v3-0324" not in picked
+
+
+def test_unrecognised_family_falls_back_to_full_list() -> None:
+    models = [{"id": "anthropic/claude-haiku", "name": "x"}, {"id": "anthropic/claude-instant", "name": "y"}]
+    assert _ids(model_families.curate(models)) == ["anthropic/claude-haiku", "anthropic/claude-instant"]

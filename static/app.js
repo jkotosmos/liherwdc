@@ -1175,7 +1175,7 @@ async function loadSettings() {
 
 function renderCurrent(model) {
   const info = catalog.find((m) => m.id === currentModel) || model;
-  el("current-name").textContent = (info && info.name) || currentModel || "не выбрана";
+  el("current-name").textContent = (info && info.name && shortName(info.name)) || currentModel || "не выбрана";
   el("current-id").textContent = currentModel;
   facts(el("current-facts"), info ? [
     ["Семейство", FAMILY_NOTE[info.family] || (dashboard && dashboard.model && dashboard.model.family) || ""],
@@ -1188,29 +1188,24 @@ function renderCurrent(model) {
 function modelRow(m) {
   return `
     <li class="model-item${m.id === currentModel ? " selected" : ""}" data-id="${escapeHtml(m.id)}">
-      <span class="m-name">${escapeHtml(m.name)}${m.tools === null ? ' <span class="m-flag">инструменты не подтверждены</span>' : ""}</span>
+      <span class="m-name">${escapeHtml(shortName(m.name))}${m.tools === null ? ' <span class="m-flag">инструменты не подтверждены</span>' : ""}</span>
       <span class="m-price">${escapeHtml(price(m.price_in))}<br>${escapeHtml(price(m.price_out))}</span>
       <span class="m-id">${escapeHtml(m.id)}</span>
     </li>`;
 }
 
+// «DeepSeek: DeepSeek V3» → «DeepSeek V3»: семейство и так видно по заголовку.
+const shortName = (name) => name.replace(/^[^:]{1,30}:\s*/, "");
+
 function renderModels() {
-  const query = el("model-search").value.trim().toLowerCase();
-  const sort = el("model-sort").value;
-  const list = catalog.filter((m) => !query || m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query));
-  const cost = (m) => (m.price_in ?? Infinity) + (m.price_out ?? Infinity);
-  const sorted = (items) => (sort === "price" ? [...items].sort((a, b) => cost(a) - cost(b)) : items);
   const html = familyCounts.map((family) => {
-    const items = sorted(list.filter((m) => m.family === family.key));
+    const items = catalog.filter((m) => m.family === family.key);
     if (!items.length) return "";
-    return `<div class="fam-title">${escapeHtml(family.label)} <span>${items.length}</span></div>
+    return `<div class="fam-title">${escapeHtml(family.label)}</div>
       <ul class="model-list">${items.map(modelRow).join("")}</ul>`;
   }).join("");
-  el("model-groups").innerHTML = html || '<div class="card-note">Ничего не найдено.</div>';
+  el("model-groups").innerHTML = html || '<div class="card-note">Моделей этих семейств в каталоге нет.</div>';
 }
-
-el("model-search").addEventListener("input", renderModels);
-el("model-sort").addEventListener("change", renderModels);
 
 el("model-groups").addEventListener("click", async (event) => {
   const item = event.target.closest(".model-item");
