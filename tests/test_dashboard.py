@@ -243,3 +243,12 @@ def test_miniapp_page_and_brand_font_are_served(client) -> None:
     assert "Пульт управления" in page.text and "telegram-web-app.js" in page.text
     font = client.get("/static/fonts/Gilroy-Regular.ttf")
     assert font.status_code == 200 and font.headers["content-type"].startswith(("font/", "application/"))
+
+
+def test_dashboard_is_only_in_miniapp(client) -> None:
+    """Пульт включается флагом только в мини-приложении; веб-чат на / остаётся чатом."""
+    web = client.get("/")
+    mini = client.get("/miniapp")
+    assert "window.OPERON_MINIAPP = true" not in web.text
+    assert "telegram-web-app.js" not in web.text
+    assert "window.OPERON_MINIAPP = true" in mini.text

@@ -612,7 +612,15 @@ el("new-chat").addEventListener("click", async () => {
 /* Разделы и переходы                                                  */
 /* ------------------------------------------------------------------ */
 
-const PAGES = ["today", "chat", "docs", "tasks", "settings"];
+// Пульт (Сегодня, Документы, Поручения) живёт только в мини-приложении Telegram.
+// Веб-версия на сайте бота остаётся чатом с настройками.
+const isMiniApp = Boolean(window.OPERON_MINIAPP) || inTelegram;
+const PAGES = isMiniApp ? ["today", "chat", "docs", "tasks", "settings"] : ["chat", "settings"];
+const HOME = isMiniApp ? "today" : "chat";
+const ALL_PAGES = ["today", "chat", "docs", "tasks", "settings"];
+document.querySelectorAll(".tab").forEach((tab) => {
+  if (!PAGES.includes(tab.dataset.view)) tab.remove();
+});
 let dashboard = null;
 let catalog = [];
 let currency = "₽";
@@ -647,12 +655,13 @@ function pill(label, state) {
 }
 
 function showView(view) {
+  if (!PAGES.includes(view)) view = HOME;
   document.querySelectorAll(".tab").forEach((tab) => {
     const active = tab.dataset.view === view;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   });
-  PAGES.forEach((name) => {
+  ALL_PAGES.forEach((name) => {
     const node = name === "chat" ? chat : el(name === "today" ? "view-today" : name === "docs" ? "view-docs" : name === "tasks" ? "view-tasks" : "settings");
     if (node) node.classList.toggle("hidden", name !== view);
   });
@@ -677,7 +686,7 @@ document.addEventListener("click", (event) => {
   const target = go.dataset.go;
   if (PAGES.includes(target)) {
     showView(target);
-  } else {
+  } else if (isMiniApp) {
     showView("today");
     el(target).scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -1237,6 +1246,6 @@ el("google-help").addEventListener("click", () => askInChat("Как подклю
 (async () => {
   if (inTelegram && !(await telegramLogin())) return;
   loadStatus();
-  showView("today");
+  showView(HOME);
   if (!inTelegram) input.focus();
 })();

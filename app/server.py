@@ -492,6 +492,8 @@ def index() -> FileResponse:
 
 
 TELEGRAM_SCRIPT = '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
+# Флаг включает пульт (Сегодня, Документы, Поручения): он есть только в мини-приложении.
+MINIAPP_FLAG = "<script>window.OPERON_MINIAPP = true;</script>"
 
 
 @app.get("/miniapp")
@@ -502,7 +504,7 @@ def miniapp() -> HTMLResponse:
     недоступный telegram.org задерживал бы загрузку страницы.
     """
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(page.replace("<!--telegram-web-app-->", TELEGRAM_SCRIPT, 1))
+    return HTMLResponse(page.replace("<!--telegram-web-app-->", TELEGRAM_SCRIPT + MINIAPP_FLAG, 1))
 
 
 if STATIC_DIR.exists():
