@@ -607,13 +607,108 @@ el("new-chat").addEventListener("click", async () => {
   input.focus();
 });
 
+
 /* ------------------------------------------------------------------ */
-/* Индикаторы состояния                                                */
+/* Разделы и переходы                                                  */
 /* ------------------------------------------------------------------ */
 
-function pill(label, state) {
-  return `<span class="pill ${state}"><span class="dot"></span>${label}</span>`;
+const PAGES = ["today", "chat", "docs", "tasks", "settings"];
+let dashboard = null;
+let catalog = [];
+let currency = "₽";
+let currentModel = "";
+let taskFilter = "all";
+let documents = [];
+
+const money = (value, digits = 2) =>
+  value === undefined || value === null
+    ? "—"
+    : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: Math.min(digits, 2) }).format(value)} ${currency}`;
+
+const price = (value) => (value === null || value === undefined ? "?" : money(value, value < 1 ? 4 : 2));
+function plural(count, one, few, many) {
+  const n = Math.abs(count);
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return `${count} ${one}`;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return `${count} ${few}`;
+  return `${count} ${many}`;
 }
+
+function facts(target, rows) {
+  target.innerHTML = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
+    .join("");
+}
+
+function pill(label, state) {
+  return `<span class="pill ${state}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+}
+
+function showView(view) {
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  PAGES.forEach((name) => {
+    const node = name === "chat" ? chat : el(name === "today" ? "view-today" : name === "docs" ? "view-docs" : name === "tasks" ? "view-tasks" : "settings");
+    if (node) node.classList.toggle("hidden", name !== view);
+  });
+  el("composer").classList.toggle("hidden", view !== "chat");
+  if (view === "today") loadDashboard();
+  if (view === "docs") loadDocuments();
+  if (view === "tasks") loadTasks();
+  if (view === "settings") loadSettings();
+  if (view === "chat") input.focus();
+  window.scrollTo(0, 0);
+}
+
+el("tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest(".tab");
+  if (tab) showView(tab.dataset.view);
+});
+
+// Кнопки пульта: переход к разделу или к блоку на той же странице.
+document.addEventListener("click", (event) => {
+  const go = event.target.closest("[data-go]");
+  if (!go) return;
+  const target = go.dataset.go;
+  if (PAGES.includes(target)) {
+    showView(target);
+  } else {
+    showView("today");
+    el(target).scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+});
+
+// Кнопки «Написать в чате»: текст уходит в поле ввода, человек дописывает и отправляет сам.
+// data-send — для вопросов без последствий: отправляется сразу.
+function askInChat(text, sendNow = false) {
+  showView("chat");
+  input.value = text;
+  input.dispatchEvent(new Event("input"));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  if (sendNow) send();
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-ask]");
+  if (!button || busy) return;
+  askInChat(button.dataset.ask, button.hasAttribute("data-send"));
+});
+
+function ask(text) {
+  // Переключение модели меняет работу бота для всех — только после согласия.
+  if (tg && tg.showConfirm && inTelegram) return new Promise((resolve) => tg.showConfirm(text, resolve));
+  return Promise.resolve(window.confirm(text));
+}
+
+/* ------------------------------------------------------------------ */
+/* Состояние системы (шапка)                                           */
+/* ------------------------------------------------------------------ */
 
 async function loadStatus() {
   try {
@@ -623,139 +718,421 @@ async function loadStatus() {
       return;
     }
     const status = await response.json();
-    el("org-name").textContent = status.org;
     document.title = `Ассистент ${status.org}`;
     el("model-line").textContent = `${status.model} · ${status.timezone}`;
-
     const kb = status.knowledge_base;
-    const parts = [
-      kb.documents
-        ? pill(`База знаний: ${kb.documents}`, "ok")
-        : pill("База знаний пуста", "off"),
-      status.google.connected
-        ? pill(status.google.account_hint || "Google подключён", "ok")
-        : pill("Google не подключён", "off"),
-      status.web_search ? pill("Интернет", "ok") : pill("Интернет выкл.", "off"),
-    ];
-    el("indicators").innerHTML = parts.join("");
+    el("indicators").innerHTML = [
+      kb.documents ? pill(`База: ${kb.documents}`, "ok") : pill("База пуста", "off"),
+      status.google.connected ? pill("Google", "ok") : pill("Google не подключён", "off"),
+    ].join("");
   } catch {
     el("model-line").textContent = "сервер недоступен";
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Модель и баланс                                                     */
+/* Пульт «Сегодня»                                                     */
 /* ------------------------------------------------------------------ */
 
-let catalog = [];
-let currency = "₽";
-let currentModel = "";
-
-const money = (value, digits = 2) =>
-  value === undefined || value === null
-    ? "—"
-    : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: digits, minimumFractionDigits: Math.min(digits, 2) }).format(value)} ${currency}`;
-
-const price = (value) => (value === null || value === undefined ? "?" : money(value, value < 1 ? 4 : 2));
-
-function facts(target, rows) {
-  target.innerHTML = rows
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`)
-    .join("");
-}
-
-function showView(view) {
-  document.querySelectorAll(".tab").forEach((tab) => {
-    const active = tab.dataset.view === view;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", String(active));
-  });
-  document.querySelectorAll(".view-chat").forEach((node) => node.classList.toggle("hidden", view !== "chat"));
-  el("settings").classList.toggle("hidden", view !== "settings");
-  if (view === "settings") loadSettings();
-}
-
-el("tabs").addEventListener("click", (event) => {
-  const tab = event.target.closest(".tab");
-  if (tab) showView(tab.dataset.view);
-});
-
-function renderCurrent(model) {
-  const info = catalog.find((m) => m.id === currentModel) || model;
-  el("current-name").textContent = (info && info.name) || currentModel || "не выбрана";
-  el("current-id").textContent = currentModel;
-  facts(el("current-facts"), info ? [
-    ["Вход, 1 млн токенов", price(info.price_in)],
-    ["Выход, 1 млн токенов", price(info.price_out)],
-    ["Контекст", info.context_length ? `${new Intl.NumberFormat("ru-RU").format(info.context_length)} токенов` : null],
-  ] : []);
-}
-
-function renderModels() {
-  const query = el("model-search").value.trim().toLowerCase();
-  const sort = el("model-sort").value;
-  let list = catalog.filter((m) => !query || m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query));
-  if (sort === "price") {
-    const cost = (m) => (m.price_in ?? Infinity) + (m.price_out ?? Infinity);
-    list = [...list].sort((a, b) => cost(a) - cost(b));
+async function fetchDashboard() {
+  const response = await fetch("/api/dashboard");
+  if (response.status === 401 && !inTelegram) {
+    window.location.href = "/login";
+    throw new Error("нужен вход");
   }
-  el("model-list").innerHTML = list.slice(0, 200).map((m) => `
-    <li class="model-item${m.id === currentModel ? " selected" : ""}" data-id="${escapeHtml(m.id)}">
-      <span class="m-name">${escapeHtml(m.name)}${m.tools === null ? ' <span class="m-flag">инструменты не подтверждены</span>' : ""}</span>
-      <span class="m-price">${escapeHtml(price(m.price_in))}<br>${escapeHtml(price(m.price_out))}</span>
-      <span class="m-id">${escapeHtml(m.id)}</span>
-    </li>`).join("") || '<li class="card-note">Ничего не найдено.</li>';
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
-el("model-search").addEventListener("input", renderModels);
-el("model-sort").addEventListener("change", renderModels);
-
-function ask(text) {
-  // Переключение модели меняет работу бота для всех — только после согласия.
-  if (tg && tg.showConfirm && inTelegram) return new Promise((resolve) => tg.showConfirm(text, resolve));
-  return Promise.resolve(window.confirm(text));
+async function loadDashboard() {
+  try {
+    dashboard = await fetchDashboard();
+    renderDashboard(dashboard);
+  } catch (err) {
+    el("today-sub").textContent = `Не удалось загрузить: ${err.message}`;
+  }
 }
 
-el("model-list").addEventListener("click", async (event) => {
-  const item = event.target.closest(".model-item");
-  if (!item || item.dataset.id === currentModel) return;
-  const model = catalog.find((m) => m.id === item.dataset.id);
-  const agreed = await ask(`Переключить ассистента на «${model ? model.name : item.dataset.id}»? Это действует и в чате бота.`);
-  if (!agreed) return;
-  const who = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : "веб";
-  const response = await fetch("/api/model", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Operon-User": who },
-    body: JSON.stringify({ model: item.dataset.id }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    el("balance-note").textContent = payload.detail || `Не удалось переключить (HTTP ${response.status})`;
-    el("balance-note").classList.add("error");
+el("refresh-today").addEventListener("click", loadDashboard);
+
+function renderDashboard(d) {
+  const label = d.today.label.charAt(0).toUpperCase() + d.today.label.slice(1);
+  el("today-title").textContent = label;
+  el("today-sub").textContent = `Данные на ${d.today.time}. Изменения появятся в карточке подтверждения в чате.`;
+
+  // Google — если не подключён, говорим прямо, что и как сделать.
+  const banner = el("google-banner");
+  banner.classList.toggle("hidden", d.google.connected);
+  if (!d.google.connected) {
+    el("google-banner-text").textContent = " Календарь, Диск и таблицы пока недоступны ассистенту. В Telegram-боте отправьте команду /auth и войдите своей почтой Google."; 
+  }
+
+  // Четыре цифры сверху.
+  const meetings = d.meetings.items || [];
+  el("st-meetings").textContent = d.meetings.available ? String(meetings.length) : "—";
+  el("st-meetings-hint").textContent = !d.meetings.available
+    ? d.meetings.reason || "календарь не подключён"
+    : meetings.length
+      ? `дальше: ${meetings.find((m) => !m.all_day)?.time || meetings[0].time}`
+      : "свободный день";
+
+  el("st-overdue").textContent = String(d.tasks.overdue);
+  el("st-overdue").classList.toggle("late", d.tasks.overdue > 0);
+  el("st-tasks-hint").textContent = `открыто ${d.tasks.open}, на неделе ${d.tasks.week}`;
+
+  const outside = d.kpi.critical + d.kpi.warning;
+  el("st-kpi").textContent = String(outside);
+  el("st-kpi-hint").textContent = d.kpi.total ? `критичных ${d.kpi.critical} из ${d.kpi.total}` : "показателей пока нет";
+
+  const kb = d.knowledge;
+  el("st-docs").textContent = kb.enabled && kb.access ? String(kb.documents) : "—";
+  el("st-docs-hint").textContent = !kb.enabled
+    ? "Квант не подключён"
+    : !kb.access
+      ? "нет доступа по роли"
+      : kb.dated ? `с датой: ${kb.dated}` : "";
+
+  renderMeetings(d);
+  renderTodayTasks(d.tasks.items);
+  renderKpi(d.kpi);
+  renderKnowledgeBox(kb);
+  renderReminders(d.reminders);
+
+  const failed = Object.keys(d.errors || {});
+  el("today-errors").classList.toggle("hidden", failed.length === 0);
+  el("today-errors").textContent = failed.length
+    ? `Не загрузилось: ${failed.join(", ")}. Остальное показано. Подробности — в журнале сервера.`
+    : "";
+}
+
+function renderMeetings(d) {
+  const list = el("meetings-list");
+  if (!d.meetings.available) {
+    list.innerHTML = `<div class="empty">Календарь недоступен: ${escapeHtml(d.meetings.reason || "Google не подключён")}.</div>`;
     return;
   }
-  currentModel = payload.current.model;
-  renderCurrent();
-  renderModels();
-  loadStatus();
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  const items = d.meetings.items || [];
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">На сегодня встреч нет.</div>';
+    return;
+  }
+  const day = d.today.label;
+  list.innerHTML = items.map((m) => {
+    const when = m.all_day ? "весь день" : `${m.time}${m.end ? "–" + m.end : ""}`;
+    const meta = [m.location, m.attendees ? `участников: ${m.attendees}` : "", m.organizer && m.organizer !== "" ? `организатор: ${m.organizer}` : ""]
+      .filter(Boolean).join(" · ");
+    const timeText = m.all_day ? "" : m.time;
+    return `
+      <div class="row">
+        <div class="row-time">${escapeHtml(timeText || "•")}</div>
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(m.title)}</div>
+          <div class="row-meta">${escapeHtml(when)}${meta ? " · " + escapeHtml(meta) : ""}</div>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Перенеси встречу «${m.title}» (${day}, ${when}) на `)}">Перенести</button>
+          <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Удали встречу «${m.title}» (${day}, ${when})`)}">Удалить</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function dueText(task) {
+  if (!task.due) return '<span class="row-meta">без срока</span>';
+  if (task.overdue) return `<span class="late">просрочено на ${plural(Math.abs(task.days_left), "день", "дня", "дней")}</span>`;
+  if (task.days_left === 0) return '<span class="today-mark">сегодня</span>';
+  return `<span class="row-meta">до ${escapeHtml(task.due_ru)}</span>`;
+}
+
+function taskRow(task) {
+  const badge = task.priority === "high" ? '<span class="tag crit">важно</span>' : "";
+  const who = task.assignee ? ` · ${escapeHtml(task.assignee)}` : "";
+  return `
+    <div class="row">
+      <div class="row-main">
+        <div class="row-title">${escapeHtml(task.title)} ${badge}</div>
+        <div class="row-meta">${dueText(task)}${who} · ${escapeHtml(task.status_ru)} · ${escapeHtml(task.id)}</div>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Отметь поручение «${task.title}» (${task.id}) выполненным`)}">Закрыть</button>
+        <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Перенеси срок поручения «${task.title}» (${task.id}) на `)}">Срок</button>
+      </div>
+    </div>`;
+}
+
+function renderTodayTasks(items) {
+  const urgent = items.filter((t) => t.overdue || t.days_left === 0 || (t.days_left !== null && t.days_left <= 7));
+  const shown = (urgent.length ? urgent : items).slice(0, 6);
+  el("today-tasks").innerHTML = shown.length
+    ? shown.map(taskRow).join("")
+    : '<div class="empty">Открытых поручений нет.</div>';
+}
+
+function renderKpi(kpi) {
+  if (!kpi.total) {
+    el("kpi-list").innerHTML = '<div class="empty">Показатели ещё не заведены. Их можно добавить в чате: «заведи показатель …».</div>';
+    return;
+  }
+  if (!kpi.items.length) {
+    el("kpi-list").innerHTML = '<div class="empty">Все показатели в норме.</div>';
+    return;
+  }
+  el("kpi-list").innerHTML = kpi.items.map((k) => {
+    const tag = k.status === "critical" ? '<span class="tag crit">критично</span>' : '<span class="tag warn">внимание</span>';
+    const dev = k.deviation_pct === null || k.deviation_pct === undefined ? "" : ` · отклонение ${k.deviation_pct > 0 ? "+" : ""}${k.deviation_pct}%`;
+    const num = (v) => (v === null || v === undefined ? "—" : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v)}${k.unit ? " " + k.unit : ""}`);
+    return `
+      <div class="row kpi-row clickable" data-ask="${escapeHtml(`Разбери отклонение по показателю «${k.name}» за ${k.period}: почему и что делать`)}">
+        <div class="row-main">
+          <div class="kpi-name">${escapeHtml(k.name)}</div>
+          <div class="kpi-nums">${escapeHtml(k.period)} · план ${escapeHtml(num(k.plan))} · факт ${escapeHtml(num(k.fact))}${escapeHtml(dev)}</div>
+        </div>
+        ${tag}
+      </div>`;
+  }).join("");
+}
+
+function renderKnowledgeBox(kb) {
+  const box = el("knowledge-box");
+  if (!kb.enabled) {
+    box.innerHTML = '<div class="empty">Квант не подключён на сервере. Документы берутся из папки базы знаний.</div>';
+    return;
+  }
+  if (!kb.access) {
+    box.innerHTML = `<div class="empty">${escapeHtml(kb.reason || "Документы недоступны: нет роли на сайте базы знаний.")}</div>`;
+    return;
+  }
+  const sources = Object.entries(kb.by_source || {}).map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(" · ");
+  const collections = (kb.collections || []).map((c) => `${escapeHtml(c.name)} — ${c.points ?? "?"} фрагм.`).join(" · ");
+  box.innerHTML = `
+    <div class="kb-summary">
+      <span><b>${kb.documents}</b> документов</span>
+      <span><b>${kb.dated}</b> с датой</span>
+      ${kb.latest ? `<span>последнее: <b>${escapeHtml(kb.latest)}</b></span>` : ""}
+    </div>
+    ${sources ? `<div class="card-note">${sources}</div>` : ""}
+    ${collections ? `<div class="card-note">${collections}</div>` : ""}
+    <div class="list" style="margin-top:10px">
+      ${(kb.items || []).map((d) => `
+        <div class="row doc-row clickable" data-ask="${escapeHtml(`Что написано в документе «${d.title}»? Коротко, со ссылкой на источник`)}">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(d.title)}</div>
+            <div class="doc-date">${escapeHtml(d.source)}${d.date ? " · " + escapeHtml(d.date) : ""}${d.topic_status ? " · " + escapeHtml(d.topic_status) : ""}</div>
+          </div>
+        </div>`).join("") || '<div class="empty">Документов пока нет.</div>'}
+    </div>`;
+}
+
+function renderReminders(rem) {
+  const list = el("reminders-list");
+  if (!rem.active) {
+    list.innerHTML = '<div class="empty">Активных напоминаний нет.</div>';
+    return;
+  }
+  list.innerHTML = rem.items.map((r) => `
+    <div class="row">
+      <div class="row-time">${escapeHtml(r.at.slice(11, 16) || "•")}</div>
+      <div class="row-main">
+        <div class="row-title">${escapeHtml(r.text)}</div>
+        <div class="row-meta">${escapeHtml(r.at.slice(0, 10))}${r.repeat ? " · повтор" : ""}</div>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Отмени напоминание ${r.id}`)}">Отменить</button>
+      </div>
+    </div>`).join("");
+}
+
+/* Новая встреча: короткая форма → текст запроса в чат → карточка подтверждения. */
+
+function nextFullHour() {
+  const now = new Date();
+  now.setMinutes(0, 0, 0);
+  now.setHours(now.getHours() + 1);
+  return now;
+}
+
+el("new-meeting-toggle").addEventListener("click", () => {
+  const form = el("meeting-form");
+  const open = form.classList.toggle("hidden") === false;
+  if (open) {
+    const start = nextFullHour();
+    form.elements.date.value = start.toLocaleDateString("sv-SE");
+    form.elements.time.value = `${String(start.getHours()).padStart(2, "0")}:00`;
+    form.elements.title.focus();
+  }
 });
+
+el("meeting-cancel").addEventListener("click", () => el("meeting-form").classList.add("hidden"));
+
+el("meeting-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const title = form.elements.title.value.trim();
+  if (!title) return;
+  const [y, m, d] = form.elements.date.value.split("-");
+  let text = `Создай встречу «${title}» ${d}.${m}.${y} в ${form.elements.time.value}, длительность ${form.elements.duration.value} мин`;
+  const place = form.elements.place.value.trim();
+  const guests = form.elements.guests.value.trim();
+  if (place) text += `, место: ${place}`;
+  if (guests) text += `, участники: ${guests}`;
+  form.reset();
+  form.classList.add("hidden");
+  askInChat(text);
+});
+
+/* ------------------------------------------------------------------ */
+/* Поручения                                                           */
+/* ------------------------------------------------------------------ */
+
+async function loadTasks() {
+  try {
+    if (!dashboard) dashboard = await fetchDashboard();
+    renderTasks();
+  } catch (err) {
+    el("tasks-sub").textContent = `Не удалось загрузить: ${err.message}`;
+  }
+}
+
+function renderTasks() {
+  if (!dashboard) return;
+  const tasks = dashboard.tasks;
+  el("tasks-sub").textContent = `Открыто ${tasks.open}, просрочено ${tasks.overdue}. Закрыть или перенести срок можно из карточки — изменение пойдёт через подтверждение.`;
+  const filters = {
+    all: () => true,
+    overdue: (t) => t.overdue,
+    today: (t) => t.days_left === 0,
+    week: (t) => t.days_left !== null && t.days_left >= 0 && t.days_left <= 7,
+    nodate: (t) => !t.due,
+  };
+  const rows = tasks.items.filter(filters[taskFilter] || filters.all);
+  el("tasks-list").innerHTML = rows.length
+    ? rows.map(taskRow).join("")
+    : `<div class="empty">${taskFilter === "all" ? "Открытых поручений нет." : "По этому фильтру пусто."}</div>`;
+  document.querySelectorAll("#task-filters .chip-btn").forEach((b) => b.classList.toggle("active", b.dataset.filter === taskFilter));
+}
+
+el("task-filters").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip-btn");
+  if (!chip) return;
+  taskFilter = chip.dataset.filter;
+  renderTasks();
+});
+
+el("new-task").addEventListener("click", () => askInChat("Поставь поручение: "));
+
+/* ------------------------------------------------------------------ */
+/* Документы «Квант»                                                   */
+/* ------------------------------------------------------------------ */
+
+async function loadDocuments() {
+  try {
+    const response = await fetch("/api/documents");
+    if (response.status === 401 && !inTelegram) {
+      window.location.href = "/login";
+      return;
+    }
+    const data = await response.json();
+    documents = data.items || [];
+    if (!data.enabled) {
+      el("docs-sub").textContent = "Квант не подключён на сервере.";
+    } else if (!data.access) {
+      el("docs-sub").textContent = data.reason || "Документы недоступны: нет роли на сайте базы знаний.";
+    } else {
+      el("docs-sub").textContent = `Документов: ${data.documents}, с датой: ${data.dated}${data.latest ? `, последнее: ${data.latest}` : ""}. Видны только документы вашей роли.`;
+    }
+    renderDocuments();
+  } catch (err) {
+    el("docs-sub").textContent = `Не удалось загрузить: ${err.message}`;
+  }
+}
+
+function renderDocuments() {
+  const query = el("docs-search").value.trim().toLowerCase();
+  const rows = documents.filter((d) => !query || d.title.toLowerCase().includes(query));
+  el("docs-list").innerHTML = rows.map((d) => {
+    const status = d.topic_status ? `<span class="tag ${d.topic_status === "утверждена" ? "ok" : "warn"}">${escapeHtml(d.topic_status)}</span>` : "";
+    const date = d.date ? `${escapeHtml(d.date)}${d.date_meaning ? " — " + escapeHtml(d.date_meaning) : ""}` : "без даты";
+    const open = d.link ? `<a class="btn btn-ghost btn-small" href="${escapeHtml(d.link)}" target="_blank" rel="noopener">Открыть</a>` : "";
+    return `
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(d.title)} ${status}</div>
+          <div class="row-meta">${escapeHtml(d.source)} · ${date} · фрагментов: ${d.fragments}</div>
+        </div>
+        <div class="row-actions">
+          ${open}
+          <button type="button" class="btn btn-ghost btn-small" data-ask="${escapeHtml(`Что написано в документе «${d.title}»? Коротко, со ссылкой на источник`)}">Спросить</button>
+        </div>
+      </div>`;
+  }).join("") || `<div class="empty">${documents.length ? "Ничего не найдено." : "Документов пока нет. Загрузите их на сайте базы знаний или подключите Google Drive."}</div>`;
+}
+
+el("docs-search").addEventListener("input", renderDocuments);
+
+/* ------------------------------------------------------------------ */
+/* Настройки: Google, база, баланс, модель                             */
+/* ------------------------------------------------------------------ */
+
+const FAMILY_NOTE = {
+  deepseek: "DeepSeek",
+  gpt: "GPT (OpenAI)",
+  claude: "Claude (Anthropic)",
+};
+let familyCounts = [];
+
+function renderGoogleCard(google) {
+  if (!google.connected) {
+    el("google-state").innerHTML = `
+      <dl class="kv"><dt>Статус</dt><dd><span class="tag warn">не подключён</span></dd></dl>
+      <div class="card-note">${escapeHtml(google.reason || "Google не подключён")}. Откройте бота в Telegram и отправьте команду /auth — он покажет вход в Google.</div>`;
+    return;
+  }
+  const how = { delegated: "от имени пользователя (организация)", shared: "открытый боту календарь" }[google.mode] || "вход через Google";
+  el("google-state").innerHTML = `
+    <dl class="kv">
+      <dt>Статус</dt><dd><span class="tag ok">подключён</span></dd>
+      <dt>Почта</dt><dd>${escapeHtml(google.account || "определена")}</dd>
+      <dt>Способ</dt><dd>${escapeHtml(how)}</dd>
+    </dl>
+    <div class="card-note">Календарь, Диск и таблицы доступны ассистенту. Создание и изменение — только после подтверждения.</div>`;
+}
+
+function renderQuantCard(kb) {
+  if (!kb.enabled) {
+    el("quant-state").innerHTML = '<div class="empty">Квант не подключён на сервере.</div>';
+    return;
+  }
+  const collections = (kb.collections || []).map((c) => `${escapeHtml(c.name)} · ${c.points ?? "?"} фрагм.`).join("<br>");
+  el("quant-state").innerHTML = `
+    <dl class="kv">
+      <dt>Доступ</dt><dd>${kb.access ? `по роли «${escapeHtml(kb.role || "—")}»` : `<span class="tag crit">нет роли</span>`}</dd>
+      <dt>Документов</dt><dd>${kb.access ? kb.documents : "—"}</dd>
+      <dt>Коллекции</dt><dd>${collections || "—"}</dd>
+    </dl>
+    ${kb.access ? "" : `<div class="card-note">${escapeHtml(kb.reason || "Нужна роль на сайте базы знаний.")}</div>`}`;
+}
 
 async function loadSettings() {
   const note = el("balance-note");
   note.classList.remove("error");
   note.textContent = "Загружаю…";
   try {
-    const [billing, models] = await Promise.all([
+    const [billing, models, dash] = await Promise.all([
       fetch("/api/billing").then((r) => r.json()),
       fetch("/api/models").then((r) => r.json()),
+      dashboard ? Promise.resolve(dashboard) : fetchDashboard().catch(() => null),
     ]);
+    if (dash) {
+      dashboard = dash;
+      renderGoogleCard(dash.google);
+      renderQuantCard(dash.knowledge);
+    }
     currentModel = (billing.current && billing.current.model) || "";
     if (!billing.available) {
       el("balance-value").textContent = "—";
       note.textContent = "Баланс и каталог доступны при работе через RouterAI (ROUTERAI_API_KEY).";
-      renderCurrent();
+      el("model-groups").innerHTML = '<div class="card-note">Список моделей появится, когда на сервере подключён RouterAI.</div>';
+      renderCurrent(billing.model);
       return;
     }
     currency = billing.currency || currency;
@@ -774,8 +1151,9 @@ async function loadSettings() {
     if (billing.balance === undefined) note.classList.add("error");
 
     catalog = models.models || [];
+    familyCounts = models.families || [];
     if (!models.available) {
-      el("model-list").innerHTML = `<li class="card-note error">${escapeHtml(models.detail || "Каталог недоступен.")}</li>`;
+      el("model-groups").innerHTML = `<div class="card-note error">${escapeHtml(models.detail || "Каталог недоступен.")}</div>`;
     } else {
       renderModels();
     }
@@ -786,8 +1164,79 @@ async function loadSettings() {
   }
 }
 
+function renderCurrent(model) {
+  const info = catalog.find((m) => m.id === currentModel) || model;
+  el("current-name").textContent = (info && info.name) || currentModel || "не выбрана";
+  el("current-id").textContent = currentModel;
+  facts(el("current-facts"), info ? [
+    ["Семейство", FAMILY_NOTE[info.family] || (dashboard && dashboard.model && dashboard.model.family) || ""],
+    ["Вход, 1 млн токенов", price(info.price_in)],
+    ["Выход, 1 млн токенов", price(info.price_out)],
+    ["Контекст", info.context_length ? `${new Intl.NumberFormat("ru-RU").format(info.context_length)} токенов` : null],
+  ] : []);
+}
+
+function modelRow(m) {
+  return `
+    <li class="model-item${m.id === currentModel ? " selected" : ""}" data-id="${escapeHtml(m.id)}">
+      <span class="m-name">${escapeHtml(m.name)}${m.tools === null ? ' <span class="m-flag">инструменты не подтверждены</span>' : ""}</span>
+      <span class="m-price">${escapeHtml(price(m.price_in))}<br>${escapeHtml(price(m.price_out))}</span>
+      <span class="m-id">${escapeHtml(m.id)}</span>
+    </li>`;
+}
+
+function renderModels() {
+  const query = el("model-search").value.trim().toLowerCase();
+  const sort = el("model-sort").value;
+  const list = catalog.filter((m) => !query || m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query));
+  const cost = (m) => (m.price_in ?? Infinity) + (m.price_out ?? Infinity);
+  const sorted = (items) => (sort === "price" ? [...items].sort((a, b) => cost(a) - cost(b)) : items);
+  const html = familyCounts.map((family) => {
+    const items = sorted(list.filter((m) => m.family === family.key));
+    if (!items.length) return "";
+    return `<div class="fam-title">${escapeHtml(family.label)} <span>${items.length}</span></div>
+      <ul class="model-list">${items.map(modelRow).join("")}</ul>`;
+  }).join("");
+  el("model-groups").innerHTML = html || '<div class="card-note">Ничего не найдено.</div>';
+}
+
+el("model-search").addEventListener("input", renderModels);
+el("model-sort").addEventListener("change", renderModels);
+
+el("model-groups").addEventListener("click", async (event) => {
+  const item = event.target.closest(".model-item");
+  if (!item || item.dataset.id === currentModel) return;
+  const model = catalog.find((m) => m.id === item.dataset.id);
+  const agreed = await ask(`Переключить ассистента на «${model ? model.name : item.dataset.id}»? Это действует и в чате бота.`);
+  if (!agreed) return;
+  const who = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : "web";
+  const response = await fetch("/api/model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Operon-User": who },
+    body: JSON.stringify({ model: item.dataset.id }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    el("balance-note").textContent = payload.detail || `Не удалось переключить (HTTP ${response.status})`;
+    el("balance-note").classList.add("error");
+    return;
+  }
+  currentModel = payload.current.model;
+  renderCurrent();
+  renderModels();
+  loadStatus();
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+});
+
+el("google-help").addEventListener("click", () => askInChat("Как подключить Google к моему аккаунту? Коротко, по шагам.", true));
+
+/* ------------------------------------------------------------------ */
+/* Запуск                                                              */
+/* ------------------------------------------------------------------ */
+
 (async () => {
   if (inTelegram && !(await telegramLogin())) return;
   loadStatus();
+  showView("today");
   if (!inTelegram) input.focus();
 })();

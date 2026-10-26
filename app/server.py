@@ -19,7 +19,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, model_choice, routerai
+from . import auth, dashboard, model_choice, model_families, routerai
 from .agent import agent
 from .config import env_source, BASE_DIR, settings
 from .integrations import accounts, google_client, google_oauth
@@ -283,14 +283,25 @@ def models(tools_only: bool = True) -> JSONResponse:
         return JSONResponse({"available": False, "detail": str(exc), "current": chosen}, status_code=502)
     # Без вызова инструментов агент бесполезен — такие модели не предлагаем.
     # Неизвестно (шлюз не сообщил) — показываем с пометкой.
-    listed = [m for m in catalog if not tools_only or m["tools"] is not False]
+    # Выбор ограничен тремя семействами: каталог большой, а людям нужны они.
+    tooled = [m for m in catalog if not tools_only or m["tools"] is not False]
+    listed = [
+        {**m, "family": model_families.family(m["id"])}
+        for m in tooled
+        if model_families.is_allowed(m["id"])
+    ]
     return JSONResponse(
         {
             "available": True,
             "currency": routerai.currency(),
             "current": chosen,
             "models": listed,
-            "hidden_without_tools": len(catalog) - len(listed),
+            "families": [
+                {"key": key, "label": label, "count": sum(1 for m in listed if model_families.family(m["id"]) == key)}
+                for key, label in model_families.FAMILIES
+            ],
+            "hidden_without_tools": len(catalog) - len(tooled),
+            "hidden_by_family": len(tooled) - len(listed),
         }
     )
 
@@ -310,6 +321,11 @@ def choose_model(request: ModelRequest, http_request: Request) -> JSONResponse:
                 {"detail": "Эта модель не умеет вызывать инструменты — агент с ней работать не сможет."},
                 status_code=422,
             )
+    if not model_families.is_allowed(model_id):
+        return JSONResponse(
+            {"detail": "В выборе только модели DeepSeek, GPT и Claude. Другие задаются в настройках сервера (OPERON_MODEL)."},
+            status_code=422,
+        )
     who = http_request.headers.get("x-operon-user", "")[:100]
     model_choice.set_model(model_id, changed_by=who)
     logger.info("Модель переключена на %s (%s)", model_id, who or "веб")
@@ -328,6 +344,18 @@ def billing() -> JSONResponse:
     except routerai.BillingError as exc:
         data["errors"].append(str(exc))
     return JSONResponse({"available": True, "current": chosen, **data})
+
+
+@app.get("/api/dashboard")
+def dashboard_summary(http_request: Request) -> JSONResponse:
+    """Пульт «Сегодня»: встречи, поручения, показатели, документы, модель и расходы."""
+    return JSONResponse(dashboard.summary(_account(http_request)))
+
+
+@app.get("/api/documents")
+def dashboard_documents(http_request: Request, limit: int = 300) -> JSONResponse:
+    """Документы «Квант», доступные этому человеку (по его роли на сайте)."""
+    return JSONResponse(dashboard.documents(_account(http_request), min(max(limit, 1), 500)))
 
 
 @app.post("/api/logout")

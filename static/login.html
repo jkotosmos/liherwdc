@@ -12,7 +12,9 @@
     width: 100%; max-width: 380px; background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius); padding: 28px;
   }
-  .login-card .mark { margin-bottom: 16px; }
+  .login-card .mark { margin-bottom: 18px; font-size: 22px; font-weight: 700; letter-spacing: .02em; color: var(--text); line-height: 1; }
+  .login-card .mark span { color: var(--accent); }
+  .login-card .btn-gold-login { font-weight: 600; }
   .login-card h1 { font-size: 19px; margin: 0 0 6px; letter-spacing: -0.01em; }
   .login-card p { color: var(--text-dim); font-size: 14px; margin: 0 0 20px; }
   .login-card input[type=password] {
@@ -20,14 +22,15 @@
     border: 1px solid var(--border); background: var(--bg); color: var(--text); margin-bottom: 12px;
   }
   .login-card input[type=password]:focus { outline: none; border-color: var(--accent); }
-  .login-card button { width: 100%; background: var(--accent); color: #fff; border: none; padding: 11px; font-size: 15px; }
-  .login-error { color: var(--danger); font-size: 13.5px; min-height: 20px; margin-top: 10px; }
+  .login-card button { width: 100%; background: var(--accent); color: #111; border: 1px solid var(--accent); border-radius: 8px; padding: 11px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .login-card button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+  .login-error { color: var(--danger-text); font-size: 13.5px; min-height: 20px; margin-top: 10px; }
 </style>
 </head>
 <body>
 <div class="login-wrap">
   <form class="login-card" id="form">
-    <div class="mark">◈</div>
+    <div class="mark">OPER<span>ON</span></div>
     <h1>Ассистент OPERON</h1>
     <p>Введите пароль доступа.</p>
     <input type="password" id="password" placeholder="Пароль" autocomplete="current-password" autofocus required>

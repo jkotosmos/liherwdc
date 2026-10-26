@@ -560,7 +560,7 @@ def _google_live_checks() -> list[Check]:
 
 
 def check_billing() -> list[Check]:
-    """То, что покажет вкладка «Модель и баланс» в Mini App."""
+    """То, что покажет вкладка «Настройки» в Mini App: модель, баланс, подключения."""
     from . import routerai
 
     if not routerai.available():

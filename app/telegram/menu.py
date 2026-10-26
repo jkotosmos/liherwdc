@@ -106,7 +106,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category("svc", "⚙️ Сервис", (
         Action("s_check", "Проверка подключений", "cmd", "check"),
         Action("s_auth", "Подключить Google", "cmd", "auth"),
-        Action("s_app", "Модель и баланс", "cmd", "app"),
+        Action("s_app", "Пульт и настройки", "cmd", "app"),
         Action("s_status", "Статус", "cmd", "status"),
         Action("s_new", "Новый диалог", "cmd", "new"),
     )),
@@ -145,7 +145,7 @@ BOT_COMMANDS = [
     {"command": "menu", "description": "Меню по разделам"},
     {"command": "check", "description": "Проверить подключения"},
     {"command": "auth", "description": "Подключить Google"},
-    {"command": "app", "description": "Модель и баланс"},
+    {"command": "app", "description": "Пульт: сегодня, поручения, модель"},
     {"command": "new", "description": "Новый диалог"},
     {"command": "status", "description": "Что подключено"},
     {"command": "help", "description": "Подсказка"},

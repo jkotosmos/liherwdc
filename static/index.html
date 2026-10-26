@@ -2,69 +2,159 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Ассистент OPERON</title>
 <link rel="stylesheet" href="/static/styles.css">
 <!--telegram-web-app-->
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23111'/><text x='50' y='66' font-family='Arial' font-weight='700' font-size='40' text-anchor='middle' fill='%23fff'>OP<tspan fill='%23BE9956'>ON</tspan></text></svg>">
 </head>
 <body>
 <div class="app">
   <header class="topbar">
     <div class="brand">
-      <span class="mark">◈</span>
-      <div>
-        <div class="brand-name">Ассистент <span id="org-name">OPERON</span></div>
-        <div class="brand-sub" id="model-line">подключение…</div>
-      </div>
+      <div class="logo">OPER<span>ON</span></div>
+      <div class="brand-sub" id="model-line">подключение…</div>
     </div>
     <div class="topbar-right">
       <div class="indicators" id="indicators"></div>
-      <button id="new-chat" class="btn btn-ghost" type="button">Новый диалог</button>
     </div>
   </header>
 
   <nav class="tabs" id="tabs" role="tablist">
-    <button type="button" role="tab" class="tab active" data-view="chat" aria-selected="true">Чат</button>
-    <button type="button" role="tab" class="tab" data-view="settings" aria-selected="false">Модель и баланс</button>
+    <button type="button" role="tab" class="tab active" data-view="today" aria-selected="true">Сегодня</button>
+    <button type="button" role="tab" class="tab" data-view="chat" aria-selected="false">Чат</button>
+    <button type="button" role="tab" class="tab" data-view="docs" aria-selected="false">Документы</button>
+    <button type="button" role="tab" class="tab" data-view="tasks" aria-selected="false">Поручения</button>
+    <button type="button" role="tab" class="tab" data-view="settings" aria-selected="false">Настройки</button>
   </nav>
 
-  <section class="settings hidden" id="settings" aria-live="polite">
-    <div class="settings-inner">
-      <div class="card" id="balance-card">
-        <div class="card-title">Баланс RouterAI</div>
-        <div class="balance" id="balance-value">—</div>
-        <dl class="facts" id="balance-facts"></dl>
-        <div class="card-note" id="balance-note"></div>
-      </div>
-
-      <div class="card" id="current-card">
-        <div class="card-title">Модель сейчас</div>
-        <div class="current-name" id="current-name">—</div>
-        <div class="current-id" id="current-id"></div>
-        <dl class="facts" id="current-facts"></dl>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Выбрать модель</div>
-        <div class="model-tools">
-          <input id="model-search" type="search" placeholder="Поиск: claude, gpt, gemini…" autocomplete="off">
-          <select id="model-sort" aria-label="Сортировка">
-            <option value="name">по названию</option>
-            <option value="price">сначала дешёвые</option>
-          </select>
+  <!-- ====================== СЕГОДНЯ: пульт ====================== -->
+  <section class="page" id="view-today">
+    <div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Пульт управления</div>
+          <h1 id="today-title">Сегодня</h1>
+          <p class="page-sub" id="today-sub">Загружаю данные…</p>
         </div>
-        <div class="card-note">Цена — за 1 млн токенов: вход / выход. Показаны модели, которые умеют вызывать инструменты: без этого ассистент не может искать в базе знаний и календаре.</div>
-        <ul class="model-list" id="model-list"></ul>
+        <button type="button" class="btn btn-ghost" id="refresh-today">Обновить</button>
       </div>
+
+      <div class="banner hidden" id="google-banner">
+        <div>
+          <strong>Календарь и Диск не подключены.</strong>
+          <span id="google-banner-text"></span>
+        </div>
+        <button type="button" class="btn btn-gold btn-small" id="google-help">Как подключить</button>
+      </div>
+
+      <div class="stats">
+        <button type="button" class="stat" data-go="today-meetings">
+          <span class="stat-label">Встречи сегодня</span>
+          <span class="stat-value" id="st-meetings">—</span>
+          <span class="stat-hint" id="st-meetings-hint"></span>
+        </button>
+        <button type="button" class="stat" data-go="tasks">
+          <span class="stat-label">Поручения: просрочено</span>
+          <span class="stat-value" id="st-overdue">—</span>
+          <span class="stat-hint" id="st-tasks-hint"></span>
+        </button>
+        <button type="button" class="stat" data-go="today-kpi">
+          <span class="stat-label">Показатели вне нормы</span>
+          <span class="stat-value" id="st-kpi">—</span>
+          <span class="stat-hint" id="st-kpi-hint"></span>
+        </button>
+        <button type="button" class="stat" data-go="docs">
+          <span class="stat-label">Документы в базе</span>
+          <span class="stat-value" id="st-docs">—</span>
+          <span class="stat-hint" id="st-docs-hint"></span>
+        </button>
+      </div>
+
+      <div class="grid">
+        <section class="panel" id="today-meetings">
+          <div class="panel-head">
+            <h2>Встречи на сегодня</h2>
+            <button type="button" class="btn btn-gold btn-small" id="new-meeting-toggle">+ Новая встреча</button>
+          </div>
+          <form class="form hidden" id="meeting-form" autocomplete="off">
+            <label class="field wide">Название
+              <input name="title" required maxlength="200" placeholder="Например: Созвон с Петровым">
+            </label>
+            <label class="field">Дата
+              <input name="date" type="date" required>
+            </label>
+            <label class="field">Время
+              <input name="time" type="time" required>
+            </label>
+            <label class="field">Длительность
+              <select name="duration">
+                <option value="30">30 минут</option>
+                <option value="60" selected>1 час</option>
+                <option value="90">1,5 часа</option>
+                <option value="120">2 часа</option>
+              </select>
+            </label>
+            <label class="field">Место или ссылка
+              <input name="place" maxlength="200" placeholder="необязательно">
+            </label>
+            <label class="field wide">Участники (почты через запятую)
+              <input name="guests" maxlength="500" placeholder="необязательно">
+            </label>
+            <div class="form-actions wide">
+              <button type="button" class="btn btn-ghost btn-small" id="meeting-cancel">Отмена</button>
+              <button type="submit" class="btn btn-gold btn-small">Дальше в чат →</button>
+            </div>
+            <p class="card-note wide">Встреча создаётся только после вашего подтверждения: ассистент покажет карточку с проверкой.</p>
+          </form>
+          <div class="list" id="meetings-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Поручения</h2>
+            <button type="button" class="btn btn-ghost btn-small" data-go="tasks">Все</button>
+          </div>
+          <div class="list" id="today-tasks"></div>
+        </section>
+
+        <section class="panel" id="today-kpi">
+          <div class="panel-head">
+            <h2>Показатели</h2>
+          </div>
+          <div class="list" id="kpi-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>База знаний «Квант»</h2>
+            <button type="button" class="btn btn-ghost btn-small" data-go="docs">Все документы</button>
+          </div>
+          <div id="knowledge-box"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Напоминания</h2>
+          </div>
+          <div class="list" id="reminders-list"></div>
+          <div class="panel-foot">
+            <span>Новое напоминание — в чате, например «напомни завтра в 10:00 позвонить Петрову».</span>
+            <button type="button" class="btn btn-ghost btn-small" data-ask="Напомни мне " >Написать в чате</button>
+          </div>
+        </section>
+      </div>
+
+      <p class="errors hidden" id="today-errors"></p>
     </div>
   </section>
 
-  <main class="chat view-chat" id="chat">
+  <!-- ====================== ЧАТ ====================== -->
+  <main class="chat hidden" id="chat">
     <section class="welcome" id="welcome">
       <h1>Чем помочь?</h1>
       <p class="welcome-sub">
-        Я отвечаю только по данным из базы знаний OPERON, ваших файлов Google Drive,
+        Я отвечаю только по данным из базы знаний «Квант», ваших файлов Google Drive,
         календаря и открытых источников — и всегда указываю, откуда взят факт.
         Ничего не создаю и не меняю без вашего подтверждения.
       </p>
@@ -78,15 +168,108 @@
     <div id="messages"></div>
   </main>
 
-  <footer class="composer view-chat">
+  <footer class="composer hidden" id="composer">
     <div class="composer-inner">
       <textarea id="input" rows="1" placeholder="Спросите о продуктах, партнёрах, тарифах, KPI, задачах…" autocomplete="off"></textarea>
       <button id="send" class="btn btn-primary" type="button" aria-label="Отправить">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10.2 15.6 12 3.4 13.8z"/></svg>
       </button>
     </div>
-    <div class="composer-hint">Enter — отправить, Shift+Enter — перенос строки</div>
+    <div class="composer-hint">Enter — отправить, Shift+Enter — перенос строки · <button type="button" class="linkish" id="new-chat">новый диалог</button></div>
   </footer>
+
+  <!-- ====================== ДОКУМЕНТЫ ====================== -->
+  <section class="page hidden" id="view-docs">
+    <div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">База знаний</div>
+          <h1>Документы</h1>
+          <p class="page-sub" id="docs-sub">Загружаю список…</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <input id="docs-search" type="search" placeholder="Поиск по названию" autocomplete="off">
+      </div>
+      <div class="list" id="docs-list"></div>
+    </div>
+  </section>
+
+  <!-- ====================== ПОРУЧЕНИЯ ====================== -->
+  <section class="page hidden" id="view-tasks">
+    <div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Реестр</div>
+          <h1>Поручения</h1>
+          <p class="page-sub" id="tasks-sub">Загружаю список…</p>
+        </div>
+        <button type="button" class="btn btn-gold btn-small" id="new-task">+ Новое поручение</button>
+      </div>
+      <div class="chips" id="task-filters" role="group" aria-label="Фильтр">
+        <button type="button" class="chip-btn active" data-filter="all">Все открытые</button>
+        <button type="button" class="chip-btn" data-filter="overdue">Просроченные</button>
+        <button type="button" class="chip-btn" data-filter="today">Сегодня</button>
+        <button type="button" class="chip-btn" data-filter="week">На неделе</button>
+        <button type="button" class="chip-btn" data-filter="nodate">Без срока</button>
+      </div>
+      <div class="list" id="tasks-list"></div>
+    </div>
+  </section>
+
+  <!-- ====================== НАСТРОЙКИ ====================== -->
+  <section class="page hidden" id="settings" aria-live="polite">
+    <div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Параметры</div>
+          <h1>Настройки</h1>
+          <p class="page-sub">Модель, расходы и подключения. Смена модели действует и в чате бота.</p>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel" id="google-card">
+          <div class="panel-head"><h2>Google</h2></div>
+          <div id="google-state"></div>
+        </div>
+
+        <div class="panel" id="knowledge-card">
+          <div class="panel-head"><h2>База «Квант»</h2></div>
+          <div id="quant-state"></div>
+        </div>
+
+        <div class="card" id="balance-card">
+          <div class="panel-head"><h2>Баланс RouterAI</h2></div>
+          <div class="balance" id="balance-value">—</div>
+          <dl class="facts" id="balance-facts"></dl>
+          <div class="card-note" id="balance-note"></div>
+        </div>
+
+        <div class="card" id="current-card">
+          <div class="panel-head"><h2>Модель сейчас</h2></div>
+          <div class="current-name" id="current-name">—</div>
+          <div class="current-id" id="current-id"></div>
+          <dl class="facts" id="current-facts"></dl>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Выбрать модель</h2>
+        </div>
+        <div class="model-tools">
+          <input id="model-search" type="search" placeholder="Поиск по названию" autocomplete="off">
+          <select id="model-sort" aria-label="Сортировка">
+            <option value="name">по названию</option>
+            <option value="price">сначала дешёвые</option>
+          </select>
+        </div>
+        <div class="card-note">Показаны модели DeepSeek, GPT и Claude, которые умеют вызывать инструменты. Цена — за 1 млн токенов: вход / выход.</div>
+        <div id="model-groups"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script src="/static/app.js"></script>
