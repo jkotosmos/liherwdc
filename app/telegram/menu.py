@@ -118,10 +118,51 @@ _BY_CATEGORY = {c.id: c for c in CATEGORIES}
 _BY_ACTION = {a.id: a for c in CATEGORIES for a in c.actions}
 
 
-def root_keyboard() -> dict:
+def root_keyboard(app_url: str = "") -> dict:
     buttons = [{"text": c.label, "callback_data": f"m:c:{c.id}"} for c in CATEGORIES]
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    if app_url:
+        rows.append([{"text": "📱 Открыть пульт", "web_app": {"url": app_url}}])
     return {"inline_keyboard": rows}
+
+
+# Постоянная клавиатура под полем ввода. Нажатие кнопки присылает боту её
+# текст — по нему и узнаём, что нажато (keyboard_target).
+PLAN_BUTTON = "🗓 План на день"
+APP_BUTTON = "📱 Пульт"
+PLAN_REQUEST = (
+    "Составь мой план на сегодня: встречи из календаря по времени, поручения со сроком "
+    "сегодня и просроченные, напоминания. Коротко, что сделать в первую очередь."
+)
+KEYBOARD_ROWS: tuple[tuple[str, ...], ...] = (
+    (PLAN_BUTTON, APP_BUTTON),
+    ("📅 Календарь", "✅ Поручения"),
+    ("📚 База знаний", "📄 Документы и отчёты"),
+    ("🌐 Интернет", "⚙️ Сервис"),
+)
+
+
+def reply_keyboard() -> dict:
+    return {
+        "keyboard": [[{"text": label} for label in row] for row in KEYBOARD_ROWS],
+        "resize_keyboard": True,
+        "is_persistent": True,
+        "input_field_placeholder": "Вопрос, поручение или голосовое",
+    }
+
+
+_BY_LABEL = {c.label: c.id for c in CATEGORIES}
+
+
+def keyboard_target(text: str) -> tuple[str, str] | None:
+    """Что значит нажатая кнопка клавиатуры: ("category", id), ("ask", запрос), ("cmd", имя)."""
+    if text == PLAN_BUTTON:
+        return ("ask", PLAN_REQUEST)
+    if text == APP_BUTTON:
+        return ("cmd", "app")
+    if text in _BY_LABEL:
+        return ("category", _BY_LABEL[text])
+    return None
 
 
 def category_keyboard(category_id: str) -> dict | None:

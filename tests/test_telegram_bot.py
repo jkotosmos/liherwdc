@@ -887,6 +887,56 @@ class TestMenu:
         bot._handle_update(message("/start"))
         assert api.keyboards(), "приветствие приходит с кнопками разделов"
 
+    def test_start_greets_by_name_and_sets_keyboard(self, monkeypatch) -> None:
+        from app.telegram import menu
+
+        bot, api, asked = self._bot(monkeypatch)
+        update = message("/start")
+        update["message"]["from"]["first_name"] = "Кирилл <b>"
+        bot._handle_update(update)
+        first = api.texts()[0]
+        assert "Кирилл &lt;b&gt;!" in first and "без вашего подтверждения" in first
+        assert any(first.startswith(h) for h in ("Доброе утро", "Добрый день", "Добрый вечер", "Доброй ночи"))
+        keyboard = api.keyboards()[0]
+        assert keyboard["is_persistent"] and keyboard["resize_keyboard"]
+        labels = [b["text"] for row in keyboard["keyboard"] for b in row]
+        assert menu.PLAN_BUTTON in labels and menu.APP_BUTTON in labels
+        assert "inline_keyboard" in api.keyboards()[1], "второе сообщение — разделы инлайн-кнопками"
+        assert asked == []
+
+    def test_every_keyboard_button_is_understood(self) -> None:
+        from app.telegram import menu
+
+        for row in menu.reply_keyboard()["keyboard"]:
+            for button in row:
+                assert menu.keyboard_target(button["text"]) is not None, button["text"]
+        assert menu.keyboard_target("просто вопрос") is None
+
+    def test_keyboard_category_opens_inline_actions(self, monkeypatch) -> None:
+        bot, api, asked = self._bot(monkeypatch)
+        bot._handle_update(message("📅 Календарь"))
+        labels = [b["text"] for row in api.keyboards()[-1]["inline_keyboard"] for b in row]
+        assert "Встречи сегодня" in labels
+        assert asked == []
+
+    def test_keyboard_plan_asks_assistant(self, monkeypatch) -> None:
+        from app.telegram import menu
+
+        bot, api, asked = self._bot(monkeypatch)
+        state = bot._states.setdefault(1, ChatState())
+        state.oauth_started_at = 1.0
+        bot._handle_update(message(menu.PLAN_BUTTON))
+        assert asked == [menu.PLAN_REQUEST]
+        assert state.oauth_started_at is None, "кнопка не код Google"
+
+    def test_keyboard_app_button_opens_dashboard(self, monkeypatch) -> None:
+        bot, api, asked = self._bot(monkeypatch)
+        monkeypatch.setattr(bot_module, "miniapp_url", lambda: "https://bot.example/miniapp")
+        bot._handle_update(message("📱 Пульт"))
+        button = api.keyboards()[-1]["inline_keyboard"][0][0]
+        assert button["web_app"]["url"] == "https://bot.example/miniapp"
+        assert asked == []
+
     def test_category_opens_actions_in_place(self, monkeypatch) -> None:
         bot, api, _ = self._bot(monkeypatch)
         bot._handle_update(callback("m:c:cal"))

@@ -51,6 +51,36 @@ GREETING = (
     "/help — подсказка"
 )
 
+WELCOME = (
+    "Я — {org}, ваш деловой ассистент.\n\n"
+    "📅 Встречи и напоминания в Google Календаре\n"
+    "✅ Поручения и план на день\n"
+    "📚 Ответы по базе знаний «Квант» и Google Диску — со ссылками на источники\n"
+    "📄 Протоколы, КП и расчёты файлами Word и Excel\n"
+    "🌐 Поиск в интернете\n\n"
+    "Ничего не создаю и не меняю без вашего подтверждения.\n\n"
+    "Разделы — на кнопках под полем ввода. Можно просто написать вопрос "
+    "или отправить голосовое. Все команды — /help."
+)
+
+
+def _hello(first_name: str = "") -> str:
+    """«Добрый день, Кирилл!» — по времени организации."""
+    from datetime import datetime
+
+    hour = datetime.now(settings.tz).hour
+    if 5 <= hour < 12:
+        hello = "Доброе утро"
+    elif 12 <= hour < 18:
+        hello = "Добрый день"
+    elif 18 <= hour < 23:
+        hello = "Добрый вечер"
+    else:
+        hello = "Доброй ночи"
+    name = first_name.strip()
+    return f"{hello}, {name}! 👋" if name else f"{hello}! 👋"
+
+
 THINKING = "⏳ Думаю…"
 EXPIRED_MARK = "⌛ Время вышло — действие отменено"
 
@@ -248,11 +278,29 @@ class TelegramBot:
             )
             return
 
+        target = menu.keyboard_target(text)
+        if target is not None:
+            self._handle_keyboard(chat_id, target)
+            return
+
         if text.startswith("/"):
-            self._handle_command(chat_id, text)
+            self._handle_command(chat_id, text, first_name=(message.get("from") or {}).get("first_name", ""))
             return
 
         self._handle_text(chat_id, text)
+
+    def _handle_keyboard(self, chat_id: int, target: tuple[str, str]) -> None:
+        """Кнопка постоянной клавиатуры: раздел, готовый запрос или команда."""
+        kind, value = target
+        if kind == "category":
+            category = menu.category(value)
+            self._api.send_message(chat_id, f"<b>{escape(category.label)}</b>",
+                                   reply_markup=menu.category_keyboard(value))
+        elif kind == "cmd":
+            self._handle_command(chat_id, "/" + value)
+        else:
+            self._api.send_message(chat_id, f"<i>{escape(value)}</i>")
+            self._handle_text(chat_id, value, from_menu=True)
 
     def _handle_voice(self, chat_id: int, voice: dict[str, Any]) -> None:
         """Голосовое → текст через шлюз → обычная реплика.
@@ -316,16 +364,27 @@ class TelegramBot:
         session = store.get_or_create(f"tg-{chat_id}")
         self._run_turn(chat_id, self._agent.send_user_message(session, text))
 
-    def _handle_command(self, chat_id: int, text: str) -> None:
+    def _handle_command(self, chat_id: int, text: str, first_name: str = "") -> None:
         command = text.split()[0].lower().lstrip("/").split("@")[0]
 
-        if command in {"start", "help"}:
+        if command == "start":
+            # Первое сообщение ставит клавиатуру под полем ввода, второе —
+            # разделы инлайн-кнопками и кнопку пульта.
+            self._api.send_message(
+                chat_id,
+                escape(_hello(first_name) + "\n\n" + WELCOME.format(org=settings.org_name)),
+                reply_markup=menu.reply_keyboard(),
+            )
+            self._api.send_message(chat_id, escape(menu.ROOT_TEXT),
+                                   reply_markup=menu.root_keyboard(miniapp_url()))
+        elif command == "help":
             self._api.send_message(
                 chat_id, escape(GREETING.format(org=settings.org_name)),
                 reply_markup=menu.root_keyboard(),
             )
         elif command == "menu":
-            self._api.send_message(chat_id, escape(menu.ROOT_TEXT), reply_markup=menu.root_keyboard())
+            self._api.send_message(chat_id, escape(menu.ROOT_TEXT), reply_markup=menu.reply_keyboard())
+            self._api.send_message(chat_id, "Разделы:", reply_markup=menu.root_keyboard(miniapp_url()))
         elif command == "new":
             store.reset(f"tg-{chat_id}")
             self._states.pop(chat_id, None)
@@ -448,8 +507,8 @@ class TelegramBot:
             return
         self._api.send_message(
             chat_id,
-            "Выбор модели, баланс RouterAI и чат:",
-            reply_markup={"inline_keyboard": [[{"text": "Открыть приложение", "web_app": {"url": url}}]]},
+            "Пульт: встречи на сегодня, поручения, документы «Кванта», выбор модели и расходы.",
+            reply_markup={"inline_keyboard": [[{"text": "📱 Открыть пульт", "web_app": {"url": url}}]]},
         )
 
     # --- приём документов ---
