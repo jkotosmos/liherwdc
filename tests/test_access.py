@@ -31,7 +31,8 @@ def bot(monkeypatch, tmp_path):
 def test_owner_adds_tester_and_tester_can_write(bot) -> None:
     b, api = bot
     b._handle_update(message("привет", user_id=TESTER, chat_id=TESTER))
-    assert api.texts() == [], "до добавления бот молчит"
+    replies = [p["text"] for m, p in api.calls if m == "send_message" and p["chat_id"] == TESTER]
+    assert len(replies) == 1 and str(TESTER) in replies[0], "до добавления — только его ID, без ответа ассистента"
 
     b._handle_update(message(f"/adduser {TESTER}", user_id=OWNER, chat_id=OWNER))
     assert "добавлен" in api.texts()[-1]

@@ -120,6 +120,9 @@ class ChatState:
 
 
 MAX_VOICE_SECONDS = 600
+STRANGER_REPEAT_SECONDS = 24 * 3600
+STRANGER_REPORTS_PER_HOUR = 10
+CONFLICT_REPEAT_SECONDS = 6 * 3600
 
 
 class TelegramBot:
@@ -132,6 +135,9 @@ class TelegramBot:
         self._states: dict[int, ChatState] = {}
         self._offset: int | None = None
         self._stop = threading.Event()
+        # Посторонние, о которых уже сообщили (ID → когда), и последний отчёт о 409.
+        self._strangers: dict[int, float] = {}
+        self._conflict_reported: float | None = None
 
         if not self._allowed:
             raise TelegramError(
@@ -168,6 +174,7 @@ class TelegramBot:
                 backoff = 1.0
             except TelegramError as exc:
                 logger.error("Ошибка получения обновлений: %s", exc)
+                self._report_conflict(exc)
                 # 409 означает второй экземпляр — ждём дольше, чтобы не спорить с ним.
                 self._stop.wait(min(backoff, 60))
                 backoff = min(backoff * 2, 60)
@@ -179,6 +186,7 @@ class TelegramBot:
                     self._handle_update(update)
                 except Exception:  # noqa: BLE001 — один сбой не должен ронять бота
                     logger.exception("Сбой обработки обновления %s", update.get("update_id"))
+                    self._report_failure(update)
 
             # Сроки идут своим ходом, даже когда пользователь молчит: длинный
             # опрос возвращается не реже раза в telegram_poll_timeout секунд.
@@ -234,6 +242,7 @@ class TelegramBot:
     def _handle_update(self, update: dict[str, Any]) -> None:
         user_id = self._allowed_user(update)
         if user_id is None:
+            self._report_stranger(update)
             return
         # Всё, что бот делает по этому сообщению, — от имени этого человека:
         # его Google, его /auth, его /check (integrations/accounts.py).
@@ -244,6 +253,132 @@ class TelegramBot:
                 self._handle_callback(update["callback_query"])
             elif "message" in update:
                 self._handle_message(update["message"])
+
+    def _report_stranger(self, update: dict[str, Any]) -> None:
+        """Пишет человек не из списка: ему — его ID, владельцам — кнопка «Дать доступ».
+
+        Раньше такие сообщения пропадали молча, и «бот не отвечает» нельзя было
+        отличить от поломки: чаще всего в список записан не тот ID (например,
+        ID другого аккаунта или бота). Теперь настоящий ID виден сразу.
+        Не чаще раза в сутки на человека — чтобы не превращать бота в спамера.
+        """
+        message = update.get("message")
+        user = (message or {}).get("from") or {}
+        user_id = user.get("id")
+        if not message or not isinstance(user_id, int) or user.get("is_bot"):
+            return
+        if message.get("chat", {}).get("type", "private") != "private":
+            return
+        now = time.monotonic()
+        last = self._strangers.get(user_id)
+        if last is not None and now - last < STRANGER_REPEAT_SECONDS:
+            return
+        # Общий предел: если бота найдут случайные люди, владельцев не завалит.
+        recent = sum(1 for t in self._strangers.values() if now - t < 3600)
+        if recent >= STRANGER_REPORTS_PER_HOUR:
+            return
+        self._strangers[user_id] = now
+
+        try:
+            self._api.send_message(
+                message["chat"]["id"],
+                f"Доступа к боту пока нет. Ваш Telegram ID: <code>{user_id}</code>\n"
+                "Владельцу уже пришёл запрос — как только он нажмёт «Дать доступ», "
+                "напишите сюда ещё раз.",
+            )
+        except Exception as exc:  # noqa: BLE001 — ответ постороннему необязателен
+            logger.warning("Не удалось ответить %s: %s", user_id, exc)
+
+        name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or "без имени"
+        username = f" @{user['username']}" if user.get("username") else ""
+        text = (
+            f"🔒 Боту пишет человек не из списка доступа: <b>{escape(name)}</b>{escape(username)}, "
+            f"ID <code>{user_id}</code>.\n"
+            f"Сообщение: <i>{escape((message.get('text') or '[не текст]')[:200])}</i>\n\n"
+            "Если это ваш сотрудник или тестировщик — дайте доступ кнопкой. "
+            "Если в списке у вас записан другой ID этого человека — значит, записан неверный."
+        )
+        keyboard = {"inline_keyboard": [[{"text": "✅ Дать доступ", "callback_data": f"u:add:{user_id}"}]]}
+        for admin in sorted(access.admins()):
+            try:
+                self._api.send_message(admin, text, reply_markup=keyboard)
+            except Exception as exc:  # noqa: BLE001 — владелец мог не нажать «Старт»
+                logger.warning("Не удалось сообщить владельцу %s о новом пользователе: %s", admin, exc)
+
+    def _grant_from_button(self, callback: dict[str, Any], chat_id: int, data: str) -> None:
+        """Кнопка «Дать доступ» из сообщения о постороннем."""
+        admin = (callback.get("from") or {}).get("id")
+        target = data.rsplit(":", 1)[-1]
+        if admin not in self._allowed:
+            self._api.answer_callback_query(callback["id"], "Давать доступ могут только владельцы бота.")
+            return
+        if not target.lstrip("-").isdigit():
+            self._api.answer_callback_query(callback["id"], "Кнопка устарела.")
+            return
+        target_id = int(target)
+        added = access.add(target_id, admin)
+        if added:
+            logger.warning("Пользователь %s добавлен в бот кнопкой пользователем %s", target_id, admin)
+        self._strangers.pop(target_id, None)
+        self._api.answer_callback_query(callback["id"], "Доступ открыт" if added else "Уже в списке")
+        self._api.edit_message_text(
+            chat_id, callback["message"]["message_id"],
+            f"✅ Доступ для <code>{target_id}</code> открыт. Убрать: /removeuser {target_id}",
+            reply_markup={"inline_keyboard": []},
+        )
+        try:
+            self._api.send_message(target_id, "✅ Доступ открыт. Отправьте /start, чтобы начать.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Не удалось сообщить %s об открытом доступе: %s", target_id, exc)
+
+    def _report_failure(self, update: dict[str, Any]) -> None:
+        """Сбой обработки: человек должен узнать, что ответа не будет, а не ждать его."""
+        source = update.get("message") or (update.get("callback_query") or {}).get("message") or {}
+        chat_id = (source.get("chat") or {}).get("id")
+        if chat_id is None:
+            return
+        try:
+            self._api.send_message(
+                chat_id,
+                "⚠️ Не получилось обработать сообщение — внутренняя ошибка. "
+                "Попробуйте ещё раз; если повторится — /check покажет, что не работает.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _report_conflict(self, error: Exception) -> None:
+        """409 от Telegram: этим же токеном опрашивает обновления ещё один экземпляр бота.
+
+        Сообщения делятся между экземплярами случайно: часть людей «не получает
+        ответа», потому что их сообщение забрал другой экземпляр — например,
+        старый сервер со старым списком доступа. Владельцам — раз в 6 часов.
+        """
+        if "409" not in str(error) and "onflict" not in str(error):
+            return
+        webhook = "webhook" in str(error).lower()
+        if webhook:
+            # Кто-то (обычно старый сервер) снова включил webhook: забираем бота обратно.
+            self._take_over_from_webhook()
+        now = time.monotonic()
+        if self._conflict_reported is not None and now - self._conflict_reported < CONFLICT_REPEAT_SECONDS:
+            return
+        self._conflict_reported = now
+        logger.error("Этим токеном пользуется второй экземпляр бота: %s", error)
+        text = (
+            "⚠️ <b>Другой сервер включил webhook для этого бота.</b>\n"
+            "Пока он включён, сообщения уходят туда, а не сюда. Я его снял, но если он "
+            "включается снова — выключите бота на старом сервере (например, на Amvera)."
+        ) if webhook else (
+            "⚠️ <b>Работают два экземпляра бота с одним токеном.</b>\n"
+            "Telegram отдаёт сообщения то одному, то другому, поэтому часть людей не получает "
+            "ответа. Скорее всего, не выключен старый бот (например, на Amvera) или запущены "
+            "две копии на сервере. Остановите лишний экземпляр."
+        )
+        for admin in sorted(access.admins()):
+            try:
+                self._api.send_message(admin, text)
+            except Exception:  # noqa: BLE001
+                pass
 
     # --- сообщения ---
 
@@ -948,6 +1083,9 @@ class TelegramBot:
         chat_id = callback["message"]["chat"]["id"]
         if data.startswith("m:"):
             self._handle_menu(callback, chat_id, data)
+            return
+        if data.startswith("u:add:"):
+            self._grant_from_button(callback, chat_id, data)
             return
         state = self._states.get(chat_id)
 

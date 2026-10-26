@@ -108,13 +108,72 @@ def clean_sessions():
 class TestWhitelist:
     """Единственная граница доступа во всей системе."""
 
-    def test_stranger_is_ignored_silently(self, monkeypatch) -> None:
+    def test_stranger_gets_only_his_id(self, monkeypatch) -> None:
         agent = FakeAgent([{"type": "text_delta", "text": "секрет"}])
         bot, api = make_bot(agent, monkeypatch)
 
-        bot._handle_update(message("покажи договоры", user_id=STRANGER))
+        bot._handle_update(message("покажи договоры", user_id=STRANGER, chat_id=STRANGER))
 
-        assert api.calls == [], "постороннему не должно уходить вообще ничего"
+        to_stranger = [p for m, p in api.calls if m == "send_message" and p["chat_id"] == STRANGER]
+        assert len(to_stranger) == 1 and str(STRANGER) in to_stranger[0]["text"]
+        assert "секрет" not in str(api.calls), "ассистент для постороннего не запускается"
+        assert store.get(f"tg-{STRANGER}") is None
+
+    def test_owner_gets_grant_button_and_it_works(self, monkeypatch, tmp_path) -> None:
+        from app.telegram import access
+
+        monkeypatch.setattr(access, "_path", lambda: tmp_path / "users.json")
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        update = message("привет", user_id=STRANGER, chat_id=STRANGER)
+        update["message"]["from"].update(first_name="Тест", username="tester")
+        bot._handle_update(update)
+
+        to_owner = [p for m, p in api.calls if m == "send_message" and p["chat_id"] == ALLOWED]
+        assert to_owner and "@tester" in to_owner[0]["text"]
+        button = to_owner[0]["reply_markup"]["inline_keyboard"][0][0]
+        assert button["callback_data"] == f"u:add:{STRANGER}"
+
+        bot._handle_update(callback(button["callback_data"], user_id=ALLOWED, chat_id=ALLOWED))
+        assert STRANGER in access.allowed()
+        assert any(p["chat_id"] == STRANGER and "Доступ открыт" in p["text"]
+                   for m, p in api.calls if m == "send_message")
+
+    def test_stranger_reported_once_a_day(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(message("1", user_id=STRANGER, chat_id=STRANGER))
+        count = len(api.calls)
+        bot._handle_update(message("2", user_id=STRANGER, chat_id=STRANGER))
+        assert len(api.calls) == count
+
+    def test_added_user_cannot_grant_access(self, monkeypatch, tmp_path) -> None:
+        from app.telegram import access
+
+        monkeypatch.setattr(access, "_path", lambda: tmp_path / "users.json")
+        access.add(555555, ALLOWED)
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        bot._handle_update(callback(f"u:add:{STRANGER}", user_id=555555, chat_id=555555))
+        assert STRANGER not in access.allowed()
+
+    def test_failure_is_reported_instead_of_silence(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("сбой")
+
+        monkeypatch.setattr(bot, "_handle_message", boom)
+        update = message("привет")
+        try:
+            bot._handle_update(update)
+        except RuntimeError:
+            bot._report_failure(update)
+        assert "Не получилось обработать" in api.texts()[-1]
+
+    def test_second_instance_is_reported_to_owner(self, monkeypatch) -> None:
+        bot, api = make_bot(FakeAgent([]), monkeypatch)
+        error = TelegramError("Conflict: terminated by other getUpdates request (409)")
+        bot._report_conflict(error)
+        bot._report_conflict(error)  # второй раз — тихо
+        assert len([t for t in api.texts() if "два экземпляра" in t]) == 1
 
     def test_stranger_callback_ignored(self, monkeypatch) -> None:
         bot, api = make_bot(FakeAgent([]), monkeypatch)
@@ -1052,7 +1111,6 @@ def test_stranger_logged_with_real_id(monkeypatch, caplog) -> None:
     bot, api = make_bot(FakeAgent([]), monkeypatch)
     with caplog.at_level(logging.WARNING):
         bot._handle_update(message("привет", user_id=STRANGER))
-    assert api.calls == []
     assert str(STRANGER) in caplog.text and "TELEGRAM_ALLOWED_USERS" in caplog.text
 
 
