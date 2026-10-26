@@ -54,7 +54,7 @@ def test_remove_and_owner_protection(bot) -> None:
     b, api = bot
     access.add(TESTER, OWNER)
     b._handle_update(message("/removeuser 1107365044", user_id=OWNER, chat_id=OWNER))
-    assert "Amvera" in api.texts()[-1] and 1107365044 in access.allowed()
+    assert "настроек сервера" in api.texts()[-1] and 1107365044 in access.allowed()
     b._handle_update(message(f"/removeuser {TESTER}", user_id=OWNER, chat_id=OWNER))
     assert "закрыт" in api.texts()[-1] and TESTER not in access.allowed()
 

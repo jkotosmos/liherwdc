@@ -563,7 +563,7 @@ class TelegramBot:
             return
         added = access.extra()
         if command == "users":
-            lines = ["<b>Доступ к боту</b>", "Владельцы (из настроек Amvera):"]
+            lines = ["<b>Доступ к боту</b>", "Владельцы (TELEGRAM_ALLOWED_USERS в настройках сервера):"]
             lines += [f"• <code>{uid}</code>" for uid in sorted(self._allowed)]
             lines.append("Добавлены командой:" if added else "Добавленных командой нет.")
             lines += [f"• <code>{uid}</code>" for uid in sorted(added)]
@@ -589,8 +589,8 @@ class TelegramBot:
             return
         if target in self._allowed:
             self._api.send_message(
-                chat_id, "Это владелец из настроек Amvera — убрать его можно только там "
-                "(TELEGRAM_ALLOWED_USERS)."
+                chat_id, "Это владелец из настроек сервера — убрать его можно только там "
+                "(TELEGRAM_ALLOWED_USERS в bot.env)."
             )
         elif access.remove(target):
             logger.warning("Пользователь %s удалён из бота пользователем %s", target, user_id)
