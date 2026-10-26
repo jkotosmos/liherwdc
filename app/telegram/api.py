@@ -67,6 +67,10 @@ class TelegramAPI:
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
+    def get_chat(self, chat_id: int) -> dict[str, Any]:
+        """Личный чат с человеком. «chat not found» — он ещё не нажимал «Старт»."""
+        return self._call("getChat", {"chat_id": chat_id})
+
     def get_webhook_info(self) -> dict[str, Any]:
         return self._call("getWebhookInfo") or {}
 
