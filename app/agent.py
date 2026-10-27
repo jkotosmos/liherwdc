@@ -25,6 +25,7 @@ from .model_choice import current_model
 from .kb import knowledge_base
 from .prompts import SYSTEM_PROMPT, runtime_context
 from .tools import registry
+from .tools import web as web_tools
 
 logger = logging.getLogger(__name__)
 
@@ -662,7 +663,7 @@ class OperonAgent:
             kb_stats=knowledge_base.stats,
             integrations={
                 "google": google_client.status(),
-                "web_search": settings.web_search_enabled,
+                "web_search": web_tools.internet_available(),
                 "quant": quant.config().enabled,
             },
         )

@@ -330,3 +330,19 @@ def test_html_error_page_is_not_shown() -> None:
     response = httpx.Response(403, request=request, text="<html><head><title>403 Forbidden</title></head></html>")
     text = web._describe_search_error("tavily", httpx.HTTPStatusError("403", request=request, response=response))
     assert "<html" not in text and "403" in text and "РФ" in text
+
+
+def test_gateway_model_is_not_told_internet_is_off(monkeypatch) -> None:
+    """Через RouterAI серверного поиска нет, но свой поиск есть — модель не должна слышать «отключён»."""
+    from app import agent as agent_module
+    from app.config import settings
+    from app.tools import web
+
+    monkeypatch.delenv("OPERON_SEARCH_PROVIDER", raising=False)
+    monkeypatch.setattr(type(settings), "web_search_enabled", property(lambda self: False))
+    assert web.internet_available()
+    context = agent_module.OperonAgent()._runtime_context()
+    assert "Веб-поиск отключён" not in context
+
+    monkeypatch.setenv("OPERON_SEARCH_PROVIDER", "none")
+    assert not web.internet_available()

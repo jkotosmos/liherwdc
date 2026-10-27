@@ -16,8 +16,24 @@ let busy = false;
 /* доходят, поэтому все запросы несут Authorization: Bearer.           */
 /* ------------------------------------------------------------------ */
 
-const tg = window.Telegram && window.Telegram.WebApp;
-const inTelegram = Boolean(tg && tg.initData);
+// Скрипт Telegram грузится в фоне (async): если telegram.org не отвечает,
+// пульт не ждёт его. Поэтому объект берём при каждом обращении.
+const tgApp = () => (window.Telegram && window.Telegram.WebApp) || null;
+// Подпись Telegram (initData). Обычно её отдаёт скрипт telegram-web-app.js, но
+// он грузится с telegram.org, а тот бывает недоступен (например, в РФ). Тогда
+// берём её там же, где берёт сам скрипт: Telegram кладёт её в адрес страницы
+// после «#» (tgWebAppData). Без этого пульт открывался со страницей пароля.
+function readInitData() {
+  const tg = tgApp();
+  if (tg && tg.initData) return tg.initData;
+  try {
+    return new URLSearchParams(window.location.hash.slice(1)).get("tgWebAppData") || "";
+  } catch {
+    return "";
+  }
+}
+const tgInitData = readInitData();
+const inTelegram = Boolean(tgInitData);
 let authToken = null;
 const nativeFetch = window.fetch.bind(window);
 
@@ -29,13 +45,18 @@ window.fetch = (url, options = {}) => {
 };
 
 async function telegramLogin() {
-  tg.ready();
-  tg.expand();
-  if (tg.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
+  // Даём скрипту Telegram до 1,5 с: с ним — тема и вибро, без него вход всё равно работает.
+  for (let i = 0; i < 15 && !tgApp(); i += 1) await new Promise((r) => setTimeout(r, 100));
+  const tg = tgApp();
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    if (tg.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
+  }
   const response = await nativeFetch("/api/telegram/auth", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ init_data: tg.initData }),
+    body: JSON.stringify({ init_data: tgInitData }),
   });
   let payload = {};
   try { payload = await response.json(); } catch { /* без тела */ }
@@ -47,6 +68,19 @@ async function telegramLogin() {
   }
   authToken = payload.token;
   return true;
+}
+
+// Нет входа. В веб-чате — страница пароля. В мини-приложении пароль не нужен
+// и сбивает с толку: значит, Telegram не передал подпись — объясняем, что делать.
+function needLogin() {
+  if (!window.OPERON_MINIAPP) {
+    window.location.href = "/login";
+    return;
+  }
+  el("model-line").textContent =
+    "Telegram не передал данные входа. Закройте пульт и откройте его кнопкой «📱 Пульт» в чате с ботом.";
+  input.disabled = true;
+  sendBtn.disabled = true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,7 +518,8 @@ function attachmentLink(event) {
   link.href = `/api/files/${encodeURIComponent(event.id)}`;
   link.download = event.name || "document";
   link.textContent = `📎 ${event.name || "Документ"} — скачать`;
-  if (inTelegram && tg.downloadFile) {
+  const tg = tgApp();
+  if (inTelegram && tg && tg.downloadFile) {
     link.addEventListener("click", (e) => {
       e.preventDefault();
       tg.downloadFile({ url: new URL(link.href, window.location.href).href, file_name: link.download });
@@ -711,6 +746,7 @@ document.addEventListener("click", (event) => {
 
 function ask(text) {
   // Переключение модели меняет работу бота для всех — только после согласия.
+  const tg = tgApp();
   if (tg && tg.showConfirm && inTelegram) return new Promise((resolve) => tg.showConfirm(text, resolve));
   return Promise.resolve(window.confirm(text));
 }
@@ -723,7 +759,7 @@ async function loadStatus() {
   try {
     const response = await fetch("/api/status");
     if (response.status === 401 && !inTelegram) {
-      window.location.href = "/login";
+      needLogin();
       return;
     }
     const status = await response.json();
@@ -746,7 +782,7 @@ async function loadStatus() {
 async function fetchDashboard() {
   const response = await fetch("/api/dashboard");
   if (response.status === 401 && !inTelegram) {
-    window.location.href = "/login";
+    needLogin();
     throw new Error("нужен вход");
   }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1037,7 +1073,7 @@ async function loadDocuments() {
   try {
     const response = await fetch("/api/documents");
     if (response.status === 401 && !inTelegram) {
-      window.location.href = "/login";
+      needLogin();
       return;
     }
     const data = await response.json();
@@ -1213,7 +1249,8 @@ el("model-groups").addEventListener("click", async (event) => {
   const model = catalog.find((m) => m.id === item.dataset.id);
   const agreed = await ask(`Переключить ассистента на «${model ? model.name : item.dataset.id}»? Это действует и в чате бота.`);
   if (!agreed) return;
-  const who = inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : "web";
+  const tg = tgApp();
+  const who = inTelegram && tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : "web";
   const response = await fetch("/api/model", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Operon-User": who },

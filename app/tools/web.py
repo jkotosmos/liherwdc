@@ -55,6 +55,18 @@ def search_is_configured() -> bool:
     return bool(_search_provider())
 
 
+def internet_available() -> bool:
+    """Есть ли у ассистента интернет: серверный поиск Anthropic или свой (web_search).
+
+    Через шлюз (RouterAI) серверного поиска нет, но свои инструменты поиска
+    подключены, и интернет работает. Раньше в таком случае модели писалось
+    «Веб-поиск отключён», и она отказывалась искать.
+    """
+    from ..config import settings
+
+    return settings.web_search_enabled or search_is_configured()
+
+
 def _normalize(title: str, url: str, snippet: str, published: str = "") -> dict[str, str]:
     return {
         "title": (title or "").strip(),

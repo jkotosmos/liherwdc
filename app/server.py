@@ -19,6 +19,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .tools import web as web_tools
 from . import auth, dashboard, model_choice, model_families, routerai
 from .agent import agent
 from .config import env_source, BASE_DIR, settings
@@ -447,7 +448,7 @@ def status(http_request: Request) -> dict[str, Any]:
         "knowledge_base": kb,
         "google": google,
         "google_oauth": google_oauth.describe_client(),
-        "web_search": settings.web_search_enabled,
+        "web_search": web_tools.internet_available(),
         "telegram": telegram.status(),
         "confirmation_ttl_minutes": settings.confirmation_ttl_minutes,
         "tools": [
@@ -493,7 +494,7 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-TELEGRAM_SCRIPT = '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
+TELEGRAM_SCRIPT = '<script async src="https://telegram.org/js/telegram-web-app.js"></script>'
 # Флаг включает пульт (Сегодня, Документы, Поручения): он есть только в мини-приложении.
 MINIAPP_FLAG = "<script>window.OPERON_MINIAPP = true;</script>"
 
