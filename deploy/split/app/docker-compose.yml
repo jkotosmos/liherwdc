@@ -19,6 +19,10 @@ services:
       QDRANT_URL: http://${DB_HOST:-10.8.0.1}:6333
       QDRANT_API_KEY: ${QDRANT_API_KEY:?задайте QDRANT_API_KEY в .env}
       MAIN_DOMAIN: ${KB_DOMAIN}
+      # Новый AWS SDK вшивает в подписанные ссылки контрольную сумму пустого
+      # тела — Yandex S3 отклоняет загрузку файла из браузера. Только по требованию.
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
       RESET_PASSWORD_URL: https://${KB_DOMAIN}/reset-password
 
   frontend:
