@@ -35,6 +35,9 @@ services:
         COPY package*.json ./
         RUN npm ci
         COPY . .
+        # Правки сайта: загрузка файлов через свой домен и понятные ошибки (patches/frontend.js).
+        COPY --from=patches frontend.js /tmp/operon-patch.js
+        RUN node /tmp/operon-patch.js /app
         ARG VITE_API_URL
         ENV VITE_API_URL=$${VITE_API_URL}
         RUN npm run build
@@ -44,6 +47,8 @@ services:
         COPY --from=builder /app/dist ./dist
         EXPOSE 3000
         CMD ["serve", "-s", "dist", "-l", "3000"]
+      additional_contexts:
+        patches: ./patches
       args:
         VITE_API_URL: https://${KB_DOMAIN}
     restart: unless-stopped
@@ -72,6 +77,9 @@ services:
     environment:
       KB_DOMAIN: ${KB_DOMAIN:?задайте KB_DOMAIN в .env}
       BOT_DOMAIN: ${BOT_DOMAIN:?задайте BOT_DOMAIN в .env}
+      # Бакет Yandex Object Storage (BUCKET_NAME из backend.env): через /s3/ сайт
+      # пересылает в него куски загружаемых файлов. Другой бакет — S3_BUCKET в .env.
+      S3_BUCKET: ${S3_BUCKET:-rag-system-backet}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/caddy:/data

@@ -1,5 +1,22 @@
 # Сайт базы знаний: API и фронтенд на одном домене (без правки CORS в бэкенде).
 {$KB_DOMAIN} {
+	# Загрузка файлов: браузер шлёт куски на свой домен, Caddy пересылает их в
+	# Yandex Object Storage как есть (подпись ссылки остаётся верной). Так не
+	# нужен CORS бакета. Только хосты хранилища — не открытый прокси.
+	handle_path /s3/{$S3_BUCKET}.storage.yandexcloud.net/* {
+		reverse_proxy https://{$S3_BUCKET}.storage.yandexcloud.net {
+			header_up Host {$S3_BUCKET}.storage.yandexcloud.net
+			header_up -Origin
+			header_up -Referer
+		}
+	}
+	handle_path /s3/storage.yandexcloud.net/* {
+		reverse_proxy https://storage.yandexcloud.net {
+			header_up Host storage.yandexcloud.net
+			header_up -Origin
+			header_up -Referer
+		}
+	}
 	handle /api/* {
 		reverse_proxy backend:3000
 	}
