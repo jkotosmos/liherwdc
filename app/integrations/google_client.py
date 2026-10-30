@@ -78,8 +78,13 @@ def _load_credentials() -> Any:
             raise IntegrationUnavailable(SETUP_HINT)
 
         try:
+            info = json.loads(payload)
+            # Токен обновляется с теми правами, что были выданы при входе. Попросить
+            # при обновлении право, которого в токене нет (набор расширили позже), —
+            # получить invalid_scope и потерять доступ; новое право даст новый /auth.
+            granted = info.get("scopes") if isinstance(info, dict) else None
             creds = Credentials.from_authorized_user_info(
-                json.loads(payload), list(settings.google_scopes)
+                info, list(granted) if granted else list(settings.google_scopes)
             )
         except (ValueError, json.JSONDecodeError) as exc:
             raise IntegrationUnavailable(

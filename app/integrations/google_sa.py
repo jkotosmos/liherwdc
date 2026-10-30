@@ -271,6 +271,44 @@ def connect(mail: str) -> dict[str, Any]:
     return link
 
 
+def add_calendar(calendar_id: str) -> str:
+    """Ещё один календарь, открытый боту (рабочий, общий). Возвращает его права.
+
+    Сервисный аккаунт не видит список календарей человека, поэтому каждый
+    дополнительный календарь называют явно — после того как его открыли боту.
+    """
+    calendar_id = (calendar_id or "").strip()
+    link = current_link()
+    if not link or link.get("mode") != "shared":
+        raise LinkError("Добавлять календари нужно только при подключении через открытый календарь (/auth почта).")
+    if not calendar_id or " " in calendar_id:
+        raise LinkError("Нужен идентификатор календаря, например: /calendars add abc123@group.calendar.google.com")
+    access = _shared_access(calendar_id)
+    if not access or access == "freeBusyReader":
+        raise LinkError(
+            f"Календарь {calendar_id} боту не открыт"
+            + (" (видно только «свободен/занят»)" if access == "freeBusyReader" else "")
+            + f". Откройте его адресу {email()} в настройках этого календаря "
+            "(«Открыть доступ пользователям» → «Просмотр всех сведений о мероприятиях» или "
+            "«Вносить изменения в мероприятия») и повторите."
+        )
+    with _lock:
+        calendars = [c for c in link.get("calendars") or [] if c != calendar_id]
+        link = {**link, "calendars": calendars + [calendar_id]}
+        _save(link)
+    return access
+
+
+def remove_calendar(calendar_id: str) -> bool:
+    link = current_link()
+    calendars = list((link or {}).get("calendars") or [])
+    if not link or calendar_id not in calendars:
+        return False
+    with _lock:
+        _save({**link, "calendars": [c for c in calendars if c != calendar_id]})
+    return True
+
+
 def describe_link(link: dict[str, Any]) -> str:
     if link.get("mode") == "delegated":
         return f"{link['email']} — от имени пользователя (делегирование организации)"

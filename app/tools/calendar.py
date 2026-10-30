@@ -2,17 +2,114 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+import time as _clock
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from ..config import settings
-from ..integrations import google_client
+from ..integrations import accounts, google_client, google_sa
 from ..integrations.google_client import HttpError, describe_http_error, get_service
 from .base import Preview, ToolError, ToolSpec, registry
 
 
+logger = logging.getLogger(__name__)
+
+
 def _calendar():
     return get_service("calendar", "v3")
+
+
+# --- какие календари читать ----------------------------------------------------
+#
+# Раньше бот читал только основной календарь, и встречи из рабочего календаря,
+# который аккаунт видит (общий календарь компании, календарь коллеги), не
+# попадали ни в ответы, ни в сводку, ни в напоминания. Теперь — все.
+
+CALENDARS_TTL = 300
+# Праздники, дни рождения контактов, номера недель — не встречи.
+_SKIP = ("#holiday@", "#contacts@", "#weeknum@", "addressbook#")
+_calendars_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_calendars_lock = threading.Lock()
+
+
+def readable_calendars() -> list[dict[str, Any]]:
+    """Календари подключённого аккаунта: [{id, name, primary}], основной первым.
+
+    Вход через Google и делегирование — список берётся у Google (все, что
+    видит аккаунт). Открытый боту календарь (сервисный аккаунт) — основной
+    плюс добавленные командой /calendars: свои списки календарей человека
+    сервисному аккаунту не видны.
+    """
+    default = google_client.default_calendar()
+    if google_client.mode() == "shared":
+        link = google_sa.current_link() or {}
+        extra = [c for c in link.get("calendars") or [] if c and c != default]
+        return [{"id": default, "name": "основной", "primary": True}] + [
+            {"id": c, "name": c, "primary": False} for c in extra
+        ]
+
+    key = accounts.resolve()
+    now = _clock.monotonic()
+    with _calendars_lock:
+        cached = _calendars_cache.get(key)
+    if cached and now - cached[0] < CALENDARS_TTL:
+        return cached[1]
+
+    found: list[dict[str, Any]] = []
+    try:
+        request = _calendar().calendarList().list(minAccessRole="reader", showHidden=False)
+        while request is not None:
+            page = request.execute()
+            for item in page.get("items", []):
+                cid = item.get("id") or ""
+                if not cid or any(mark in cid for mark in _SKIP):
+                    continue
+                found.append({
+                    "id": cid,
+                    "name": item.get("summaryOverride") or item.get("summary") or cid,
+                    "primary": bool(item.get("primary")),
+                })
+            request = _calendar().calendarList().list_next(request, page)
+    except Exception as exc:  # noqa: BLE001 — нет права на список (старый токен): только основной
+        logger.info("Список календарей недоступен, читаю только основной: %s", exc)
+        found = []
+    if not any(c["primary"] for c in found):
+        found.insert(0, {"id": default, "name": "основной", "primary": True})
+    found.sort(key=lambda c: not c["primary"])
+    with _calendars_lock:
+        _calendars_cache[key] = (now, found)
+    return found
+
+
+def _events_from(calendars: list[dict[str, Any]], params: dict[str, Any]) -> list[dict[str, Any]]:
+    """События из нескольких календарей одним списком, по времени, без повторов.
+
+    Сбой основного календаря — ошибка; сбой дополнительного — пропуск с записью
+    в журнал: один недоступный календарь не должен прятать остальные.
+    """
+    views: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for cal in calendars:
+        try:
+            items = _calendar().events().list(calendarId=cal["id"], **params).execute().get("items", [])
+        except Exception as exc:  # noqa: BLE001
+            if cal.get("primary"):
+                raise
+            logger.warning("Календарь %s не прочитан: %s", cal["id"], exc)
+            continue
+        for event in items:
+            view = _event_view(event, cal["id"])
+            if len(calendars) > 1:
+                view["calendar"] = cal.get("name") or cal["id"]
+            mark = (event.get("iCalUID") or event.get("id") or "", str(view.get("start")))
+            if mark in seen:
+                continue  # одна встреча в двух календарях (приглашение) — один раз
+            seen.add(mark)
+            views.append(view)
+    views.sort(key=lambda v: str(v.get("start") or ""))
+    return views
 
 
 def _to_rfc3339(value: str, *, end_of_day: bool = False) -> str:
@@ -82,44 +179,22 @@ def _event_view(event: dict[str, Any], calendar_id: str) -> dict[str, Any]:
 
 def list_events_between(day_from: date, day_to: date, calendar_id: str = "") -> list[dict[str, Any]]:
     """События за период — для утренней сводки, без участия модели."""
-    calendar_id = calendar_id or google_client.default_calendar()
     start = datetime.combine(day_from, time.min).replace(tzinfo=settings.tz)
     end = datetime.combine(day_to, time.max).replace(tzinfo=settings.tz)
-    events = (
-        _calendar()
-        .events()
-        .list(
-            calendarId=calendar_id,
-            timeMin=start.isoformat(),
-            timeMax=end.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=50,
-        )
-        .execute()
-        .get("items", [])
-    )
-    return [_event_view(e, calendar_id) for e in events]
+    calendars = [{"id": calendar_id, "primary": True}] if calendar_id else readable_calendars()
+    return _events_from(calendars, {
+        "timeMin": start.isoformat(), "timeMax": end.isoformat(),
+        "singleEvents": True, "orderBy": "startTime", "maxResults": 50,
+    })
 
 
 def list_events_window(start: datetime, end: datetime, calendar_id: str = "") -> list[dict[str, Any]]:
     """События, начинающиеся в интервале, — для напоминаний о встречах."""
-    calendar_id = calendar_id or google_client.default_calendar()
-    events = (
-        _calendar()
-        .events()
-        .list(
-            calendarId=calendar_id,
-            timeMin=start.isoformat(),
-            timeMax=end.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=20,
-        )
-        .execute()
-        .get("items", [])
-    )
-    return [_event_view(e, calendar_id) for e in events]
+    calendars = [{"id": calendar_id, "primary": True}] if calendar_id else readable_calendars()
+    return _events_from(calendars, {
+        "timeMin": start.isoformat(), "timeMax": end.isoformat(),
+        "singleEvents": True, "orderBy": "startTime", "maxResults": 20,
+    })
 
 
 def _send_updates() -> str:
@@ -128,7 +203,7 @@ def _send_updates() -> str:
 
 
 def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
-    calendar_id = (tool_input.get("calendar_id") or google_client.default_calendar()).strip()
+    explicit = (tool_input.get("calendar_id") or "").strip()
     now = datetime.now(settings.tz)
 
     time_min = tool_input.get("time_min")
@@ -140,35 +215,38 @@ def _calendar_list_events(tool_input: dict[str, Any]) -> Any:
         else (now + timedelta(days=14)).isoformat()
     )
 
+    limit = min(max(int(tool_input.get("max_results") or 50), 1), 250)
     params: dict[str, Any] = {
-        "calendarId": calendar_id,
         "timeMin": start,
         "timeMax": end,
         "singleEvents": True,
         "orderBy": "startTime",
-        "maxResults": min(max(int(tool_input.get("max_results") or 50), 1), 250),
+        "maxResults": limit,
     }
     if tool_input.get("query"):
         params["q"] = tool_input["query"]
 
+    calendars = [{"id": explicit, "primary": True}] if explicit else readable_calendars()
     try:
-        events = _calendar().events().list(**params).execute().get("items", [])
+        events = _events_from(calendars, params)[:limit]
     except HttpError as exc:
         raise ToolError(describe_http_error(exc, "Чтение календаря")) from exc
 
+    names = [c.get("name") or c["id"] for c in calendars]
     if not events:
         return {
             "status": "empty",
-            "calendar_id": calendar_id,
+            "calendars": names,
             "period": {"from": start, "to": end},
-            "hint": "В указанный период встреч нет. Не придумывай события.",
+            "hint": "В указанный период встреч нет ни в одном из этих календарей. Не придумывай события.",
         }
     return {
         "status": "ok",
-        "calendar_id": calendar_id,
+        "calendars": names,
         "period": {"from": start, "to": end},
         "events_count": len(events),
-        "events": [_event_view(e, calendar_id) for e in events],
+        "events": events,
+        "hint": "Чтобы изменить или удалить событие, передай его calendar_id из этого списка.",
     }
 
 
@@ -458,9 +536,9 @@ registry.register(
                 "calendar_id": {
                     "type": "string",
                     "description": (
-                        "Не указывай без необходимости — по умолчанию основной календарь "
-                        "(primary). Другой идентификатор используй, только если его назвал "
-                        "сам пользователь: списка календарей у агента нет."
+                        "Не указывай — тогда события берутся из ВСЕХ календарей аккаунта "
+                        "(основного и рабочих). Указывай, только если пользователь просит один "
+                        "конкретный календарь."
                     ),
                 },
                 "query": {"type": "string", "description": "Фильтр по тексту события."},
@@ -508,9 +586,9 @@ registry.register(
                 "calendar_id": {
                     "type": "string",
                     "description": (
-                        "Не указывай без необходимости — по умолчанию основной календарь "
-                        "(primary). Другой идентификатор используй, только если его назвал "
-                        "сам пользователь: списка календарей у агента нет."
+                        "Не указывай без необходимости — новое событие создаётся в основном "
+                        "календаре. Другой — только если пользователь просит конкретный календарь "
+                        "(его calendar_id есть в ответе calendar_list_events)."
                     ),
                 },
             },
@@ -539,9 +617,8 @@ registry.register(
                 "calendar_id": {
                     "type": "string",
                     "description": (
-                        "Не указывай без необходимости — по умолчанию основной календарь "
-                        "(primary). Другой идентификатор используй, только если его назвал "
-                        "сам пользователь: списка календарей у агента нет."
+                        "calendar_id события из ответа calendar_list_events. Обязательно передай "
+                        "его, если событие не из основного календаря, — иначе Google его не найдёт."
                     ),
                 },
                 "title": {"type": "string"},
@@ -579,9 +656,8 @@ registry.register(
                 "calendar_id": {
                     "type": "string",
                     "description": (
-                        "Не указывай без необходимости — по умолчанию основной календарь "
-                        "(primary). Другой идентификатор используй, только если его назвал "
-                        "сам пользователь: списка календарей у агента нет."
+                        "calendar_id события из ответа calendar_list_events. Обязательно передай "
+                        "его, если событие не из основного календаря, — иначе Google его не найдёт."
                     ),
                 },
             },

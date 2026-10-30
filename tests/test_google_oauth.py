@@ -41,14 +41,16 @@ def client_secret(tmp_path, monkeypatch):
 
 class TestScopeSet:
     def test_exact_scope_set(self) -> None:
-        assert set(settings.google_scopes) == {DRIVE_READONLY, DRIVE_FILE, CALENDAR_EVENTS}
+        # Список календарей — только чтение списка, не событий и не настроек.
+        calendar_list = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+        assert set(settings.google_scopes) == {DRIVE_READONLY, DRIVE_FILE, CALENDAR_EVENTS, calendar_list}
 
     def test_no_full_drive_access(self) -> None:
         """drive.file даёт доступ только к файлам, созданным самим агентом."""
         assert "https://www.googleapis.com/auth/drive" not in settings.google_scopes
 
     def test_no_calendar_listing_scope(self) -> None:
-        """Полный calendar не нужен: работаем с событиями основного календаря."""
+        """Полный calendar не нужен: события — через calendar.events, список — через calendarlist.readonly."""
         assert "https://www.googleapis.com/auth/calendar" not in settings.google_scopes
 
     def test_scopes_are_overridable(self, monkeypatch) -> None:

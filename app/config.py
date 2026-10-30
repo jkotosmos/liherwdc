@@ -230,14 +230,17 @@ class Settings:
                 # drive.file       — создание файлов и доступ ТОЛЬКО к тем,
                 #                    которые создал сам агент (протоколы, КП);
                 #                    чужие файлы этим scope'ом не изменить;
-                # calendar.events  — чтение и запись событий.
+                # calendar.events  — чтение и запись событий;
+                # calendar.calendarlist.readonly — список календарей аккаунта
+                #                    (рабочие, общие), чтобы читать встречи из всех.
                 # Любая запись (Диск и календарь) выполняется только после
                 # подтверждения пользователя — это проверяет рантайм, не промпт.
                 # Менять набор — значит проходить OAuth заново: старый токен
                 # выдан под старые scope'ы и новых прав не получит.
                 "https://www.googleapis.com/auth/drive.readonly "
                 "https://www.googleapis.com/auth/drive.file "
-                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/calendar.events "
+                "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
             ).split()
             if s
         )

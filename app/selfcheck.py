@@ -421,6 +421,7 @@ SCOPE_PURPOSE = {
     "https://www.googleapis.com/auth/drive.file": "создание файлов на Диске (протоколы, КП)",
     "https://www.googleapis.com/auth/calendar.events": "календарь: чтение и создание событий",
     "https://www.googleapis.com/auth/calendar.readonly": "календарь: только чтение",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly": "список календарей (рабочие, общие)",
 }
 
 

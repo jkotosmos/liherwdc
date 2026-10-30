@@ -187,6 +187,7 @@ BOT_COMMANDS = [
     {"command": "check", "description": "Проверить подключения"},
     {"command": "auth", "description": "Подключить Google"},
     {"command": "app", "description": "Пульт: сегодня, поручения, модель"},
+    {"command": "calendars", "description": "Какие календари читает бот"},
     {"command": "new", "description": "Новый диалог"},
     {"command": "status", "description": "Что подключено"},
     {"command": "help", "description": "Подсказка"},

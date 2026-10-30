@@ -536,6 +536,8 @@ class TelegramBot:
                 self._handle_sa_auth(chat_id, text)
         elif command == "app":
             self._handle_app(chat_id)
+        elif command == "calendars":
+            self._handle_calendars(chat_id, text)
         elif command in {"adduser", "removeuser", "users"}:
             self._handle_users(chat_id, command, text)
         elif command == "check":
@@ -548,7 +550,7 @@ class TelegramBot:
                 self._api.send_message(chat_id, f"<pre>{escape(part)}</pre>", parse_mode="HTML")
         else:
             self._api.send_message(
-                chat_id, "Неизвестная команда. Есть /menu, /new, /status, /auth, /app, /check, /users, /help."
+                chat_id, "Неизвестная команда. Есть /menu, /new, /status, /auth, /calendars, /app, /check, /users, /help."
             )
 
     # --- Mini App ---
@@ -792,6 +794,53 @@ class TelegramBot:
             self._api.send_message(chat_id, f"Доступ для <code>{target}</code> закрыт.")
         else:
             self._api.send_message(chat_id, f"<code>{target}</code> в списке не было.")
+
+    def _handle_calendars(self, chat_id: int, text: str) -> None:
+        """/calendars — какие календари читает бот; add/remove — для открытого календаря."""
+        from ..tools import calendar as calendar_tool
+
+        parts = text.split()
+        action = parts[1].lower() if len(parts) > 1 else ""
+        target = parts[2] if len(parts) > 2 else ""
+        if action in {"add", "добавить"}:
+            try:
+                access = google_sa.add_calendar(target)
+            except google_sa.LinkError as exc:
+                self._api.send_message(chat_id, "❌ " + escape(str(exc)))
+                return
+            except Exception as exc:  # noqa: BLE001 — сеть или Google
+                self._api.send_message(chat_id, "❌ Не удалось проверить календарь: " + escape(str(exc)[:300]))
+                return
+            note = "" if access in {"writer", "owner"} else " Только чтение — встречи в нём создавать нельзя."
+            self._api.send_message(chat_id, f"✅ Календарь <code>{escape(target)}</code> добавлен.{escape(note)}")
+            return
+        if action in {"remove", "убрать", "удалить"}:
+            done = google_sa.remove_calendar(target)
+            self._api.send_message(
+                chat_id, f"Календарь <code>{escape(target)}</code> {'убран' if done else 'не был добавлен'}."
+            )
+            return
+        try:
+            calendars = calendar_tool.readable_calendars()
+        except Exception as exc:  # noqa: BLE001 — Google не подключён или недоступен
+            self._api.send_message(chat_id, "❌ " + escape(str(exc)[:300]) + "\nПодключите Google: /auth")
+            return
+        lines = ["<b>Календари, которые читает бот</b>"]
+        lines += [
+            f"• {escape(c.get('name') or c['id'])}" + (" (основной)" if c.get("primary") and c.get("name") != "основной" else "")
+            for c in calendars
+        ]
+        if google_client.mode() == "shared":
+            lines.append(
+                "\nДругой календарь (рабочий, общий): откройте его адресу "
+                f"<code>{escape(google_sa.email())}</code> и отправьте\n"
+                "/calendars add <i>идентификатор</i>\n"
+                "Идентификатор — в настройках календаря, раздел «Интеграция календаря»."
+            )
+        else:
+            lines.append("\nВстречи берутся из всех этих календарей. Нового календаря нет в списке — "
+                         "проверьте, что он виден в Google Календаре этого аккаунта, или пройдите /auth заново.")
+        self._api.send_message(chat_id, "\n".join(lines))
 
     def _handle_sa_auth(self, chat_id: int, text: str) -> None:
         """Google через сервисный аккаунт: «/auth почта» — и всё, без OAuth-экранов."""
