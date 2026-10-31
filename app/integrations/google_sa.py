@@ -143,30 +143,50 @@ def _links_path() -> Path:
     return settings.data_dir / "google_links.json"
 
 
-def _preset() -> dict[str, str]:
-    """GOOGLE_ACCOUNTS=1107365044=kirill@firma.ru,8058569481=me@gmail.com — заранее, без команд."""
-    result: dict[str, str] = {}
+def _preset() -> dict[str, dict[str, Any]]:
+    """Почты (и дополнительные календари) заранее, без команд.
+
+    GOOGLE_ACCOUNTS=1107365044=kirill@gmail.com|work@group.calendar.google.com,8058569481=me@gmail.com
+    После «|» — календари, которые бот читает вместе с основным (рабочие, общие);
+    их, как и основной, нужно открыть адресу бота в Google Календаре.
+    """
+    result: dict[str, dict[str, Any]] = {}
     for part in (os.getenv("GOOGLE_ACCOUNTS") or "").replace(";", ",").split(","):
         if "=" in part:
-            user, _, mail = part.partition("=")
+            user, _, value = part.partition("=")
+            mail, *calendars = [v.strip() for v in value.split("|")]
             if user.strip() and "@" in mail:
-                result[accounts.resolve(user.strip())] = mail.strip().lower()
+                result[accounts.resolve(user.strip())] = {
+                    "email": mail.lower(),
+                    "calendars": [c for c in calendars if c],
+                }
     return result
+
+
+def _with_preset_calendars(link: dict[str, Any], preset: dict[str, Any] | None) -> dict[str, Any]:
+    """Календари из GOOGLE_ACCOUNTS добавляются и к уже сохранённой связи с той же почтой."""
+    if not preset or not preset.get("calendars") or link.get("mode") != "shared":
+        return link
+    if link.get("email") != preset["email"]:
+        return link
+    calendars = list(link.get("calendars") or [])
+    calendars += [c for c in preset["calendars"] if c not in calendars]
+    return {**link, "calendars": calendars}
 
 
 def current_link() -> dict[str, Any] | None:
     key = accounts.resolve()
     stored = read_json(_links_path(), {})
     link = stored.get(key) if isinstance(stored, dict) else None
-    if isinstance(link, dict) and link.get("email"):
-        return link
     preset = _preset().get(key)
+    if isinstance(link, dict) and link.get("email"):
+        return _with_preset_calendars(link, preset)
     if preset:
         # Не получилось — не стучимся в Google на каждом сообщении: повтор через 10 мин.
         if time.monotonic() - _preset_failed.get(key, -1e9) < 600:
             return None
         try:
-            return connect(preset)
+            return _with_preset_calendars(connect(preset["email"]), preset)
         except Exception:  # noqa: BLE001 — LinkError или сеть: подключим позже
             _preset_failed[key] = time.monotonic()
             return None

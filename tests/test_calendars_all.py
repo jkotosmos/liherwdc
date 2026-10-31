@@ -171,3 +171,21 @@ def test_calendars_command_lists_and_adds(sa, monkeypatch) -> None:  # noqa: F81
     text = api.texts()[-1]
     assert "kirill@gmail.com" not in text or "основной" in text
     assert "work@group.calendar.google.com" in text and google_sa.email() in text
+
+
+def test_preset_connects_mail_and_work_calendar_without_commands(sa, monkeypatch) -> None:  # noqa: F811
+    """GOOGLE_ACCOUNTS: почта и рабочий календарь — сразу, без /auth и /calendars."""
+    delegation(monkeypatch, works=False, access="writer")
+    monkeypatch.setenv("GOOGLE_ACCOUNTS", f"{KIRILL}=7673022@gmail.com|work@group.calendar.google.com")
+    with accounts.use(KIRILL):
+        assert google_client.mode() == "shared"
+        assert google_client.default_calendar() == "7673022@gmail.com"
+        assert [c["id"] for c in cal.readable_calendars()] == ["7673022@gmail.com", "work@group.calendar.google.com"]
+
+
+def test_preset_calendars_join_an_existing_link(sa, monkeypatch) -> None:  # noqa: F811
+    delegation(monkeypatch, works=False, access="writer")
+    with accounts.use(KIRILL):
+        google_sa.connect("7673022@gmail.com")  # раньше подключили командой /auth
+        monkeypatch.setenv("GOOGLE_ACCOUNTS", f"{KIRILL}=7673022@gmail.com|work@group.calendar.google.com")
+        assert [c["id"] for c in cal.readable_calendars()][-1] == "work@group.calendar.google.com"
